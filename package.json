@@ -1,0 +1,25 @@
+{
+  "name": "mi-bot-whatsapp",
+  "version": "1.0.0",
+  "description": "Necesitas tener instalado Node.js en tu computadora. Crea una carpeta para tu proyecto y ejecuta lo siguiente en tu terminal para iniciar el proyecto e instalar las librerías necesarias:",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JDGonzal/mi-bot-whatsapp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/JDGonzal/mi-bot-whatsapp/issues"
+  },
+  "homepage": "https://github.com/JDGonzal/mi-bot-whatsapp#readme",
+  "dependencies": {
+    "express": "5.2.1",
+    "qrcode-terminal": "0.12.0",
+    "whatsapp-web.js": "1.34.6"
+  }
+}
