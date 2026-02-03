@@ -60,13 +60,31 @@ client.on('message', async (msg) => {
   // Aquí podrías enviar el mensaje a una base de datos o a tu app de React vía WebSockets
   // Enviamos el objeto del mensaje completo a React
   io.emit('new-message', {
+    to: msg.to,
     from: msg.from,
     body: msg.body,
     timestamp: new Date().toLocaleTimeString(),
   });
 });
 
-// 6. Iniciar cliente y servidor Express
+// 6. Este evento detecta TODOS los mensajes: los que recibes y los que ENVÍAS
+client.on('message_create', async (msg) => {
+    // msg.fromMe es true si el mensaje lo enviaste tú desde cualquier dispositivo
+    if (msg.fromMe) {
+        console.log(`Mensaje enviado de ${msg.from}: ${msg.body}`);
+
+        // Enviamos el mensaje al frontend vía Socket.io
+        io.emit('new-message', {
+            from: msg.from, // O puedes usar msg.to para saber a quién se lo enviaste
+            to: msg.to,
+            body: msg.body,
+            timestamp: new Date().toLocaleTimeString(),
+            isMine: true // Útil para darle un estilo diferente en React
+        });
+    }
+});
+
+// 7. Iniciar cliente y servidor Express
 client.initialize();
 
 app.get('/', (req, res) => {
