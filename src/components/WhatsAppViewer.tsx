@@ -5,6 +5,8 @@ interface Message {
   from: string;
   body: string;
   timestamp: string;
+  to?: string;
+  isMine?: boolean | string | number | null;
 }
 
 export default function WhatsAppViewer() {
@@ -28,12 +30,22 @@ export default function WhatsAppViewer() {
       console.log('Received new-message:', data);
 
       const message: Message = {
-        from: (data?.from) ?? (data?.notifyName) ?? (data?._data?.notifyName) ?? 'unknown',
+        from:
+          data?.from ??
+          data?.notifyName ??
+          data?._data?.notifyName ??
+          'unknown',
+        to:
+          data?.to ?? data?.notifyName ?? data?._data?.notifyName ?? 'unknown',
         body: data?.body ?? '',
         timestamp:
           typeof data?.timestamp === 'number'
             ? new Date(data.timestamp * 1000).toLocaleString()
-            : data?.timestamp ?? (data?.t ? new Date(data.t * 1000).toLocaleString() : new Date().toLocaleString()),
+            : (data?.timestamp ??
+              (data?.t
+                ? new Date(data.t * 1000).toLocaleString()
+                : new Date().toLocaleString())),
+        isMine: data?.isMine ?? false,
       };
 
       setMessages((prev) => [...prev, message]);
@@ -53,8 +65,12 @@ export default function WhatsAppViewer() {
       <h1>Mensajes de WhatsApp en vivo</h1>
       <ul>
         {messages.map((m, i) => (
-          <li key={i}>
-            <strong>{m.from}:</strong> {m.body} <small>{m.timestamp}</small>
+          <li key={i}  style={{ textAlign: m.isMine ? 'right' : 'left', color: m.isMine ? 'blue' : 'black' }}>
+            <strong>From:{m.from}:</strong> {m.body}{' '}
+            <small>{m.timestamp}</small>
+            <label>
+              To: {m.to}
+            </label>
           </li>
         ))}
       </ul>

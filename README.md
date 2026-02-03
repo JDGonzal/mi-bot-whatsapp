@@ -595,3 +595,52 @@ export default function WhatsAppViewer() {
 2. **Socket.io** actúa como el "cable" que conecta el cerebro con tu interfaz visual.
 3. Cada vez que llega un mensaje (como los que se ven en tu [WhatsApp](https://web.whatsapp.com/)), este aparecerá automáticamente en tu lista de React.
 
+---
+
+## Leer los mensajer recibidos y generados
+
+Sí, es totalmente posible. Con la librería **`whatsapp-web.js`**, puedes capturar no solo los mensajes que recibes de otros, sino también los mensajes que tú mismo envías desde cualquier otro dispositivo vinculado (como tu celular o la aplicación de escritorio).
+
+Para lograr esto, solo necesitas añadir un evento adicional a tu archivo **`index.cjs`**. Actualmente estás usando client.on('message', ...), que solo se activa con mensajes entrantes. El evento que necesitas para los mensajes que tú envías es `message_create`.
+
+### 1. Actualización en tu **`index.cjs`** (Servidor)
+
+Añade este bloque de código debajo de tu actual `client.on('message', ...)`:
+
+```JavaScript
+// Este evento detecta TODOS los mensajes: los que recibes y los que ENVÍAS
+client.on('message_create', async (msg) => {
+    // msg.fromMe es true si el mensaje lo enviaste tú desde cualquier dispositivo
+    if (msg.fromMe) {
+        console.log(`Mensaje enviado por mí desde otro dispositivo: ${msg.body}`);
+
+        // Enviamos el mensaje al frontend vía Socket.io
+        io.emit('new-message', {
+            from: 'Yo', // O puedes usar msg.to para saber a quién se lo enviaste
+            body: msg.body,
+            timestamp: new Date().toLocaleTimeString(),
+            isMine: true // Útil para darle un estilo diferente en React
+        });
+    }
+});
+```
+
+### 2. ¿Por qué funciona así?
+
+* **`message` vs `message_create`**: El evento `message` se dispara únicamente cuando entra algo nuevo a tu bandeja de entrada de otra persona. El evento `message_create` se dispara cada vez que se crea un mensaje en el ecosistema de tu cuenta, sin importar el origen.
+
+* **Sincronización**: Como WhatsApp Web mantiene sincronizados todos los chats, cuando escribes algo en tu teléfono, el "navegador invisible" que corre en tu servidor de Express detecta esa actualización casi instantáneamente y dispara el evento.
+
+### 3. Ajuste sugerido en el Frontend (React)
+
+Si decides enviar la propiedad `isMine: true` como puse en el ejemplo, podrías mejorar tu componente para que los mensajes se vean distintos (como en WhatsApp real):
+
+```JavaScript
+// En tu mapeo de mensajes en React
+{messages.map((m, i) => (
+  <li key={i} style={{ textAlign: m.isMine ? 'right' : 'left', color: m.isMine ? 'blue' : 'black' }}>
+    <strong>{m.from}:</strong> {m.body}
+  </li>
+))}
+```
+Con este cambio, tu aplicación de Node/React será un reflejo fiel de todo lo que pase en tu cuenta, permitiéndote "atrapar" tanto lo que te dicen como lo que tú respondes desde el móvil.
