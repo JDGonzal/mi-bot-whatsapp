@@ -151,6 +151,9 @@ dist-ssr
 *.sln
 *.sw?
 
-#Authorization WhatsApp
+# WhatsApp Authorization 
 .wwebjs_auth/
 .wwebjs_cache
+
+# Datos de entrenamiento del OCR
+eng.traineddata

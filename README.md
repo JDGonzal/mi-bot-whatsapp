@@ -644,3 +644,129 @@ Si decides enviar la propiedad `isMine: true` como puse en el ejemplo, podrías 
 ))}
 ```
 Con este cambio, tu aplicación de Node/React será un reflejo fiel de todo lo que pase en tu cuenta, permitiéndote "atrapar" tanto lo que te dicen como lo que tú respondes desde el móvil.
+
+---
+
+## OCR (Reconocimiento Óptico de Caracteres)
+
+
+Para procesar imágenes y aplicar OCR (Reconocimiento Óptico de Caracteres) dentro de tu servidor de Node.js, la herramienta estándar y más sencilla es **`Tesseract.js`**.
+
+Como estás usando `whatsapp-web.js`, el flujo consiste en detectar si el mensaje tiene una imagen, descargarla y luego pasarla por el motor de OCR.
+
+### 1. ✅ Instalación de la librería
+
+Primero, añade **Tesseract** a tu proyecto:
+
+```Bash
+pnpm add tesseract.js -E
+```
+
+### 2. ✅ Detectar mensajes con imagen en WhatsApp
+
+En `whatsapp-web.js` debes escuchar los mensajes y verificar si tienen media:
+```js
+client.on('message', async (msg) => {
+  if (msg.hasMedia) {
+    const media = await msg.downloadMedia()
+    console.log('Imagen recibida')
+  }
+})
+```
+
+### 3. ✅ Convertir la imagen a buffer
+
+**Tesseract** trabaja mejor con buffer o archivo.
+```js
+const buffer = Buffer.from(media.data, 'base64')
+```
+Ahora ya tienes la imagen lista para OCR.
+
+### 4. ✅ Ejecutar _OCR_ con **Tesseract**
+
+Importa tesseract:
+```js
+const Tesseract = require('tesseract.js')
+```
+
+Luego:
+```js
+const result = await Tesseract.recognize(buffer, 'eng', {
+  logger: m => console.log(m) // progreso opcional
+})
+
+const texto = result.data.text
+console.log('Texto detectado:', texto)
+```
+
+### 5. ✅ Extraer SOLO números
+
+Si quieres números más que texto:
+```js
+const numeros = texto.match(/\d+/g)
+console.log('Números detectados:', numeros)
+```
+Eso devuelve:
+```css
+["123", "456", "789"]
+```
+Si no encuentra nada → `null`.
+
+### 6. 🔥 Ejemplo completo integrado
+
+Pon esto dentro de tu index.cjs:
+```js
+const Tesseract = require('tesseract.js')
+
+client.on('message', async (msg) => {
+  if (!msg.hasMedia) return
+
+  try {
+    const media = await msg.downloadMedia()
+    const buffer = Buffer.from(media.data, 'base64')
+
+    const result = await Tesseract.recognize(buffer, 'eng',{
+      logger: m => console.log(m) // progreso opcional
+    })
+    const texto = result.data.text
+
+    const numeros = texto.match(/\d+/g)
+
+    if (numeros) {
+      await msg.reply(`Números detectados: ${numeros.join(', ')}`)
+    } else {
+      await msg.reply('No detecté números en la imagen')
+    }
+
+  } catch (err) {
+    console.error(err)
+    msg.reply('Error leyendo la imagen')
+  }
+})
+```
+
+### 7.⚡ Mejora importante (recomendado)
+
+Para OCR de números, usa whitelist:
+```js
+const result = await Tesseract.recognize(buffer, 'eng', {
+  tessedit_char_whitelist: '0123456789'
+})
+```
+
+Esto le dice a **Tesseract**:
+
+👉 “Ignora letras, solo números”
+
+Aumenta muchísimo la precisión.
+
+### 8. Enviamos el objeto del mensaje completo a React
+
+```js
+      io.emit('new-message', {
+        to: msg.to,
+        from: msg.from,
+        body: numeros.join(', '),
+        timestamp: new Date().toLocaleTimeString(),
+      });
+```
