@@ -1,22 +1,11 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
-const express = require('express');
-const http = require('http'); // Necesario para Socket.io
-const { Server } = require('socket.io');
 const Tesseract = require('tesseract.js');
 
-const app = express();
-const server = http.createServer(app);
-const port = 3000;
+// ===== Estado por usuario =====
+const estados = new Map();
 
-const io = new Server(server, {
-  cors: {
-    origin: 'http://localhost:5173', // La URL de tu app de React/Next.js
-    methods: ['GET', 'POST'],
-  },
-});
-
-// 1. Configuración del cliente de WhatsApp
+// ===== Cliente WhatsApp =====
 const client = new Client({
   authStrategy: new LocalAuth(), // Guarda la sesión para no escanear QR siempre
   puppeteer: {
@@ -29,106 +18,102 @@ const client = new Client({
   },
 });
 
-// 2. Evento de conexión de Socket.io
-io.on('connection', (socket) => {
-  console.log('Un cliente (React) se ha conectado');
-});
-
-// 3. Generación del código QR para el login
 client.on('qr', (qr) => {
-  console.log('ESCANEA ESTE QR CON TU WHATSAPP:');
   qrcode.generate(qr, { small: true });
-  // Opcional: Enviar el QR al frontend si quieres mostrarlo en la web
-  io.emit('qr-code', qr);
+  console.log('Escanea el QR');
 });
 
-// 4. Confirmación de conexión
 client.on('ready', () => {
-  console.log('¡Conexión exitosa! El cliente está listo.');
-  io.emit('status', 'Conectado');
+  console.log('Bot listo ✅');
 });
 
-// 5. "ATRAPAR" LOS MENSAJES (El evento principal)
+// ===== Función OCR =====
+async function leerNumeros(buffer) {
+  const result = await Tesseract.recognize(buffer, 'eng', {
+    tessedit_char_whitelist: '0123456789',
+  });
+
+  const texto = result.data.text;
+  return texto.match(/\d+/g);
+}
+
+
+// ===== Listener principal =====
 client.on('message', async (msg) => {
   console.log(`Mensaje recibido de ${msg.from}: ${msg.body}`);
-  // console.log(msg);
-
   // Ejemplo: Responder automáticamente si dicen "Hola"
   if (msg.body.toLowerCase() === 'hola') {
-    msg.reply('¡Hola! Soy un bot conectado desde Express. 🤖');
+    return msg.reply(
+      '¡Hola! \n Por favor digita los números de las boletas separados por comas o envía una imagen con los números visibles en forma horizontal.',
+    );
   }
 
-  // Aquí podrías enviar el mensaje a una base de datos o a tu app de React vía WebSockets
-  // Enviamos el objeto del mensaje completo a React
-  io.emit('new-message', {
-    to: msg.to,
-    from: msg.from,
-    body: msg.body,
-    timestamp: new Date().toLocaleTimeString(),
-  });
-});
+  const texto = msg.body;
+  const numeros = texto.match(/\d+/g);
+  const estado = estados.get(msg.from);
 
-// 6. Verificar si hay _media files_ y extraer texto con OCR
-client.on('message', async (msg) => {
-  if (!msg.hasMedia) return;
-
-  try {
-    const media = await msg.downloadMedia();
-    const buffer = Buffer.from(media.data, 'base64');
-
-    const result = await Tesseract.recognize(buffer, 'eng', {
-      logger: (m) => console.log(m), // progreso opcional
-      tessedit_char_whitelist: '0123456789', // Solo números
+  if (numeros) {
+    estados.set(msg.from, {
+      esperandoConfirmacion: true,
+      numeros,
+      texto,
     });
-    const texto = result.data.text;
+    console.log(`Números detectados: ${numeros.join(', ')}`);
+    return msg.reply(
+      `Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
+    );
+  }
+  // ===== Caso: esperando confirmación =====
+  if (await estado?.esperandoConfirmacion) {
+    const respuesta = msg.body.trim().toLowerCase();
 
-    const numeros = texto.match(/\d+/g);
-
-    if (numeros) {
-      await msg.reply(`Números detectados: ${numeros.join(', ')}`);
-      // Enviamos el objeto del mensaje completo a React
-      io.emit('new-message', {
-        to: msg.to,
-        from: msg.from,
-        body: numeros.join(', '),
-        timestamp: new Date().toLocaleTimeString(),
-      });
-    } else {
-      await msg.reply('No detecté números en la imagen');
+    if (
+      respuesta === 's' ||
+      respuesta === 'si' ||
+      respuesta === 'y' ||
+      respuesta === 'yes'
+    ) {
+      console.log(`✅ Confirmado. Guardado de ${msg.from}`);
+      console.log(estado.numeros.join(', '))
+      estados.delete(msg.from);
+      
+      return msg.reply('✅ Confirmado. Guardado.');
     }
-  } catch (err) {
-    console.error(err);
-    msg.reply('Error leyendo la imagen');
+
+    if (respuesta === 'n' || respuesta === 'no') {
+      return msg.reply('*Sugerencia*:\n1️⃣ Mejora la imagen y envía de nuevo.\n2️⃣ O digita la lista de números separados por comas.');
+    }
+
+    return msg.reply('Responde S o N');
+  }
+
+  // ===== Caso: mensaje con imagen =====
+  if (msg.hasMedia) {
+    try {
+      const media = await msg.downloadMedia();
+      const buffer = Buffer.from(media.data, 'base64');
+
+      const numeros = await leerNumeros(buffer);
+
+      if (!numeros) {
+        return msg.reply('No detecté números en la imagen');
+      }
+
+      estados.set(msg.from, {
+        esperandoConfirmacion: true,
+        numeros,
+        buffer,
+      });
+      console.log(`Números detectados: ${numeros.join(', ')}`);
+      return msg.reply(
+        `Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
+      );
+    } catch (err) {
+      console.log('Error leyendo la imagen');
+      console.error(err);
+      msg.reply('Error leyendo la imagen');
+    }
   }
 });
 
-// 7. Este evento detecta TODOS los mensajes: los que recibes y los que ENVÍAS
-client.on('message_create', async (msg) => {
-  // msg.fromMe es true si el mensaje lo enviaste tú desde cualquier dispositivo
-  if (msg.fromMe) {
-    console.log(`Mensaje enviado de ${msg.from}: ${msg.body}`);
-
-    // Enviamos el mensaje al frontend vía Socket.io
-    io.emit('new-message', {
-      from: msg.from, // O puedes usar msg.to para saber a quién se lo enviaste
-      to: msg.to,
-      body: msg.body,
-      timestamp: new Date().toLocaleTimeString(),
-      isMine: true, // Útil para darle un estilo diferente en React
-    });
-  }
-});
-
-// 8. Iniciar cliente y servidor Express
 client.initialize();
-
-app.get('/', (req, res) => {
-  res.send('Servidor de WhatsApp funcionando 🚀');
-});
-
-// Use the http server that Socket.IO is attached to
-server.listen(port, () => {
-  console.log(
-    `Servidor Express y Socket.IO corriendo en http://localhost:${port}`,
-  );
-});

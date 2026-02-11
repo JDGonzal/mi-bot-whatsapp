@@ -770,3 +770,347 @@ Aumenta muchísimo la precisión.
         timestamp: new Date().toLocaleTimeString(),
       });
 ```
+
+## Flujo conversacional + Estado por usuario.
+
+WhatsApp no tiene “popups”, así que se simula una pantalla preguntando y esperando respuesta.
+
+
+### 🧠 Concepto clave: estado por usuario
+
+Necesitas un “almacén” de memoria temporal:
+```js
+const estados = new Map()
+```
+
+Cada usuario tendrá algo como:
+```js
+{
+  esperandoConfirmacion: true,
+  numeros: [...],
+  buffer: imagenOriginal
+}
+```
+
+### ✅ Paso 1 — Cuando detectas números → preguntar
+
+Modifica tu código OCR:
+```js
+const numeros = texto.match(/\d+/g)
+
+if (numeros) {
+  estados.set(msg.from, {
+    esperandoConfirmacion: true,
+    numeros,
+    buffer
+  })
+
+  await msg.reply(
+    `Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`
+  )
+}
+```
+
+### ✅ Paso 2 — Capturar respuesta del usuario
+
+ANTES del OCR, agrega este bloque al listener:
+```js
+client.on('message', async (msg) => {
+
+  const estado = estados.get(msg.from)
+
+  // Si está esperando confirmación
+  if (estado?.esperandoConfirmacion) {
+
+    const respuesta = msg.body.trim().toLowerCase()
+
+    if (respuesta === 's') {
+      estados.delete(msg.from)
+      return msg.reply('✅ Confirmado. Guardado.')
+    }
+
+    if (respuesta === 'n') {
+      await msg.reply('🔄 Reintentando lectura girando imagen...')
+      return reprocesarImagen(msg, estado)
+    }
+
+    return msg.reply('Responde S o N')
+  }
+
+  // ---- Aquí sigue tu lógica normal de OCR ----
+})
+```
+
+### ✅ Paso 3 — Reprocesar girando la imagen
+
+Necesitas una librería para rotar imágenes:
+
+👉 instala:
+```bash
+pnpm add sharp -E
+```
+>[!WARNING]
+>
+>**Aparece este mensaje después de la instalación:**
+>```dos
+>╭ Warning ───────────────────────────────────────────────────────────────────────────────────╮
+>│                                                                                            │
+>│   Ignored build scripts: sharp.                                                            │
+>│   Run "pnpm approve-builds" to pick which dependencies should be allowed to run scripts.   │
+>│                                                                                            │
+>╰────────────────────────────────────────────────────────────────────────────────────────────╯
+>```
+>1. Entonces probamos el comando:
+>```bash
+>pnpm approve-builds
+>```
+>2. Me aparecen estas estas opciones:
+>```dos
+>? Choose which packages to build (Press <space> to select, <a> to toggle all, <i> to invert selection) ... 
+>❯ ○ sharp
+>```
+>3. Le damos a la [`Space-Bar`] y la tecla [`ENTER`] <br/>
+>Nos pregunta:
+>```dos
+>Do you approve? (y/N) » false
+>```
+>4. Le damos la tecla [`y`] <br/>
+>y al final aparece:
+>```dos
+>node_modules/.pnpm/sharp@0.34.5/node_modules/sharp: Running install script, done in 785ms
+>```
+
+
+Luego:
+```js
+const sharp = require('sharp')
+const Tesseract = require('tesseract.js')
+```
+
+Función:
+```js
+async function reprocesarImagen(msg, estado) {
+  try {
+    const rotada = await sharp(estado.buffer)
+      .rotate(90)
+      .toBuffer()
+
+    const result = await Tesseract.recognize(rotada, 'eng', {
+      tessedit_char_whitelist: '0123456789'
+    })
+
+    const texto = result.data.text
+    const numeros = texto.match(/\d+/g)
+
+    estados.set(msg.from, {
+      esperandoConfirmacion: true,
+      numeros,
+      buffer: rotada
+    })
+
+    await msg.reply(
+      `Nueva lectura: ${numeros?.join(', ') || 'Nada detectado'}\n\n¿Correcto? S/N`
+    )
+
+  } catch (err) {
+    console.error(err)
+    msg.reply('Error reprocesando imagen')
+  }
+}
+```
+
+### 🚀 Extra pro (opcional)
+
+Puedes intentar múltiples rotaciones:
+```js
+.rotate(180)
+.rotate(270)
+```
+
+Hasta encontrar la mejor lectura.
+
+O guardar historial:
+```makefile
+intentos: 1, 2, 3...
+```
+
+### Cambios como validar imagenes y si validar textos
+
+1. No me interesa hacer revalidación de las imágenes, por ende no requerimos el `sharp`, entonces desinstalo la librería : <br/> `pnpm remove sharp`
+2. Quitamos del código la importación de `sharp`, la función que la usa:
+```js
+// const sharp = require('sharp');
+...
+// ===== Reprocesar imagen rotada =====
+// async function reprocesarImagen(msg, estado) {
+//   try {
+//     const rotada = await sharp(estado.buffer).rotate(90).toBuffer();
+
+//     const numeros = await leerNumeros(rotada);
+
+//     estados.set(msg.from, {
+//       esperandoConfirmacion: true,
+//       numeros,
+//       buffer: rotada,
+//     });
+
+//     await msg.reply(
+//       `Nueva lectura: ${numeros?.join(', ') || 'Nada detectado'}\n\n¿Correcto? S/N`,
+//     );
+//   } catch (err) {
+//     console.error(err);
+//     msg.reply('Error reprocesando imagen');
+//   }
+// }
+...
+    if (respuesta === 'n' || respuesta === 'no') {
+      // await msg.reply('🔄 Girando imagen y reintentando...');
+      // return reprocesarImagen(msg, estado);
+      return msg.reply(`Sugerencia: 
+        1. Mejora la imagen y envia de nuevo. 
+        2. O digita la lista de números separados por comas.`);
+    }
+```
+3. Añadimos la validación de números que se digitan:
+```js
+  const texto = msg.body;
+  const numeros = texto.match(/\d+/g);
+  const estado = estados.get(msg.from);
+
+  if (numeros) {
+    estados.set(msg.from, {
+      esperandoConfirmacion: true,
+      numeros,
+      texto,
+    });
+    console.log(`Números detectados: ${numeros.join(', ')}`);
+    return msg.reply(
+      `Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
+    );
+  }
+```
+4. Se borra el archivo no necesario de **`pnpm-workspace.yaml`**.
+5. Se renombra el actual **`index.cjs`** a **`index-express-socket-io.cjs`**.
+6. Se crea el archivo simple de **`index.cjs`**:
+```js
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const Tesseract = require('tesseract.js');
+
+// ===== Estado por usuario =====
+const estados = new Map();
+
+// ===== Cliente WhatsApp =====
+const client = new Client({
+  authStrategy: new LocalAuth(), // Guarda la sesión para no escanear QR siempre
+  puppeteer: {
+    headless: true, // Cambia a false si quieres ver el navegador abrirse
+    //args: ['--no-sandbox'], // tengo un error asi que lo camcio
+    // Reemplaza esta ruta por la de tu Chrome si es distinta
+    executablePath:
+      'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+  },
+});
+
+client.on('qr', (qr) => {
+  qrcode.generate(qr, { small: true });
+  console.log('Escanea el QR');
+});
+
+client.on('ready', () => {
+  console.log('Bot listo ✅');
+});
+
+// ===== Función OCR =====
+async function leerNumeros(buffer) {
+  const result = await Tesseract.recognize(buffer, 'eng', {
+    tessedit_char_whitelist: '0123456789',
+  });
+
+  const texto = result.data.text;
+  return texto.match(/\d+/g);
+}
+
+
+// ===== Listener principal =====
+client.on('message', async (msg) => {
+  console.log(`Mensaje recibido de ${msg.from}: ${msg.body}`);
+  // Ejemplo: Responder automáticamente si dicen "Hola"
+  if (msg.body.toLowerCase() === 'hola') {
+    return msg.reply(
+      '¡Hola! \n Por favor digita los números de las boletas separados por comas o envía una imagen con los números visibles en forma horizontal.',
+    );
+  }
+
+  const texto = msg.body;
+  const numeros = texto.match(/\d+/g);
+  const estado = estados.get(msg.from);
+
+  if (numeros) {
+    estados.set(msg.from, {
+      esperandoConfirmacion: true,
+      numeros,
+      texto,
+    });
+    console.log(`Números detectados: ${numeros.join(', ')}`);
+    return msg.reply(
+      `Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
+    );
+  }
+  // ===== Caso: esperando confirmación =====
+  if (await estado?.esperandoConfirmacion) {
+    const respuesta = msg.body.trim().toLowerCase();
+
+    if (
+      respuesta === 's' ||
+      respuesta === 'si' ||
+      respuesta === 'y' ||
+      respuesta === 'yes'
+    ) {
+      console.log(`✅ Confirmado. Guardado de ${msg.from}`);
+      console.log(estado.numeros.join(', '))
+      estados.delete(msg.from);
+      
+      return msg.reply('✅ Confirmado. Guardado.');
+    }
+
+    if (respuesta === 'n' || respuesta === 'no') {
+      return msg.reply('*Sugerencia*:\n1️⃣ Mejora la imagen y envía de nuevo.\n2️⃣ O digita la lista de números separados por comas.');
+    }
+
+    return msg.reply('Responde S o N');
+  }
+
+  // ===== Caso: mensaje con imagen =====
+  if (msg.hasMedia) {
+    try {
+      const media = await msg.downloadMedia();
+      const buffer = Buffer.from(media.data, 'base64');
+
+      const numeros = await leerNumeros(buffer);
+
+      if (!numeros) {
+        return msg.reply('No detecté números en la imagen');
+      }
+
+      estados.set(msg.from, {
+        esperandoConfirmacion: true,
+        numeros,
+        buffer,
+      });
+      console.log(`Números detectados: ${numeros.join(', ')}`);
+      return msg.reply(
+        `Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
+      );
+    } catch (err) {
+      console.log('Error leyendo la imagen');
+      console.error(err);
+      msg.reply('Error leyendo la imagen');
+    }
+  }
+});
+
+client.initialize();
+```
+
