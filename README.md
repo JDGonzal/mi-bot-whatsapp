@@ -84,7 +84,7 @@ app.listen(port, () => {
 1. En la terminal, ejecuta: <br/> `node index.js`
 
 ---
->[!WARNING]
+>[!CAUTION]
 >
 > Ejecuto el comando pero obtengo un error:
 >```bash
@@ -1113,4 +1113,520 @@ client.on('message', async (msg) => {
 
 client.initialize();
 ```
+
+## Almacenamiento en MS Access
+
+Sí — se puede, pero **MS Access** es especial porque no es un motor de base de datos tradicional. **Node.js** no tiene soporte nativo directo; se usa un driver puente vía _ODBC_ o _ADO_.
+
+Te explico las opciones reales y cuál conviene 👇
+
+### ✅ Opción recomendada: `node-adodb` (Windows)
+
+Funciona usando el motor _ADO_ de Windows.
+
+👉 Requisito: estar en Windows con Access instalado<br/>
+👉 Funciona muy bien con .mdb y .accdb
+
+### 🔹 Paso 1 — Instalar librería
+
+```bash
+pnpm add node-adodb -E
+```
+
+### 🔹 Paso 2 — Importar en index.cjs
+
+```js
+const ADODB = require('node-adodb')
+ADODB.debug = true
+```
+
+### 🔹 Paso 3 — Conectar base de datos
+
+1. Antes de esto creamos el archivo **`.env`**, con la ruta de la base de datos de MSAccess.
+2. Requerimos o instalar `dotenv`: <br/> `pnpm add dotenv -E` <br/> o cambir en el _script_ el `"start"` por est líne <br/> `"node --watch --env-file=.env index.cjs"` <br/> Pero infortunadamente el último no funciona correctamente, entonces procedo con la primera instalación.
+3. Añado esta importación
+```js
+const dotenv = require('dotenv');
+dotenv.config();
+```
+4. Y puedo utilizar una variable de ambiente.
+
+Ruta absoluta del archivo:
+```js
+const connection = ADODB.open(
+  'Provider=Microsoft.ACE.OLEDB.16.0;Data Source=C:\\ruta\\tu_db.accdb;Persist Security Info=False;'
+)
+```
+
+Ejemplo real:
+```js
+const connection = ADODB.open(
+  'Provider=Microsoft.ACE.OLEDB.16.0;Data Source=C:\\db\\clientes.accdb;'
+)
+```
+
+### 🔹 Paso 4 — Verificando Conexión a la BD de MSAccess
+
+Validamos que si tengamos una conexión correcta a la BD de MSAccess con esta función:
+
+```js
+async function probarConexionMSAccess() {
+  const testQuery = 'SELECT 1 AS ok';
+  try {
+    const test = await connection.query(testQuery);
+    console.log('✅ Conexión exitosa a MSAccess:', test);
+    return true;
+  } catch (err) {
+    console.error('❌ Error de conexión:');
+    connection
+      .query(testQuery)
+      .then((data) => console.log('OK:', data))
+      .catch((err) => console.error(err));
+    return false;
+  }
+}
+```
+
+### 🔹 Paso 5 — Llamar la función cuando se habilita el _bot_
+
+```js
+client.on('ready', async () => {
+  console.log('✅ Bot listo y conectado a WhatsApp.');
+  probarConexionMSAccess();
+});
+```
+Pero tengo este error:
+```diff
+- process: {
+-    code: -2146824582,
+-    message: 'Provider cannot be found. It may not be properly installed.'
+-  }
+```
+
+>[!CAUTION]
+>
+>Perfecto — ese error ya nos dice exactamente qué pasa:
+>
+>`Provider cannot be found. It may not be properly installed.`
+>
+>👉 Node sí está funcionando<br/>
+>👉 ADODB sí está funcionando<br/>
+>👉 Lo que falta es el driver de Access<br/>
+>
+>No es un error de código. Es 100% entorno Windows.
+>
+>### 🔥 Causa real
+>
+>Tu sistema no tiene instalado:
+>
+>👉 Microsoft Access Database Engine
+>
+>o está instalado en arquitectura incorrecta.
+>
+>### ✅ Solución correcta (paso a paso)
+>
+>**1️⃣ Ver arquitectura de Node**
+>
+>En terminal:
+>```code
+>node -p process.arch
+>```
+>Resultado típico: `x64` o `ia32`.
+>
+>**2️⃣ Descargar Access Engine correcto**
+>
+>Descarga oficial:
+>
+>👉 [Microsoft Access Database Engine 2016 Redistributable](https://www.microsoft.com/en-us/download/details.aspx?id=54920)
+>
+>Debes elegir:
+>
+>* **`AccessDatabaseEngine_X64.exe`**
+>* **`AccessDatabaseEngine.exe`** (x86)
+>
+>👉 debe coincidir con Node
+
+>[!TIP]
+>
+>### En mi caso pese a que la arquitectura reportada es `x64`, me permitió instalar **`AccessDatabaseEngine.exe`** y con esto el proceso funcionó.
+
+
+### 🔹 Paso 6 — Usarlo dentro del bot
+
+1. Creamos la tabla `CELULARES`:
+```sql
+CREATE TABLE CELULARES (
+    ID AUTOINCREMENT PRIMARY KEY,
+    MESSAGE_FROM VARCHAR(32) NOT NULL,
+    USER_NAME VARCHAR(64) NOT NULL,
+    CELLPHONE VARCHAR(16) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP 
+);
+```
+2. Creamos la función que será llamada desde el método `probarConexionMSAccess()`:
+```js
+async function crearTablaCelulares() {
+  const createTableQuery = `
+CREATE TABLE CELULARES (
+    ID AUTOINCREMENT PRIMARY KEY,
+    MESSAGE_FROM VARCHAR(32) NOT NULL,
+    USER_NAME VARCHAR(64) NOT NULL,
+    CELLPHONE VARCHAR(16) UNIQUE NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP 
+);`;
+
+  await connection
+    .query(createTableQuery)
+    .then(() => console.log('✅ Tabla "CELULARES" creada.'))
+    .catch((err) => {
+      msg = err?.process?.message ?? String(err);
+      if (msg.toLowerCase().includes('already exists'))
+        console.error('✅ Tabla "CELULARES" Lista.');
+      else if (msg.toLowerCase().includes('object is closed'))
+        console.log('✅ Tabla "CELULARES" creada.');
+      else console.error(`❌ ${msg}`);
+    });
+}
+```
+3. Verificar que exista el número celular en la tabla:
+```js
+async function VerificarCelularEnBaseDeDatos(from) {
+  const query1 = `SELECT COUNT(*) AS [Found] 
+    FROM [CELULARES] 
+    WHERE [MESSAGE_FROM] = '${from}';`;
+  const query2 = `SELECT TOP 1 * 
+    FROM [CELULARES] 
+    WHERE [MESSAGE_FROM] = '${from}';`;
+  const estado = estados.get(from);
+  if ((await from) === 'status@broadcast') {
+    estados.delete(from);
+    return null;
+  }
+  try {
+    const result = await connection.query(query1);
+    if (result[0]?.Found > 0) {
+      const data = await connection.query(query2);
+      return data;
+    } else {
+      if (await estado?.esperandoCelular) return;
+      console.log('❌ Número no encontrado en la base de datos:', result);
+      return null;
+    }
+  } catch (err) {
+    if (await estado?.esperandoCelular) return;
+    console.error('❌ Error verificando número en la base de datos:', err);
+    return null;
+  }
+}
+```
+4. Preguntar por el número celular y almacenar el estado:
+```js
+  console.log(`Mensaje recibido de ${msg.from}: ${msg.body}`);
+  ...
+  const data = await VerificarCelularEnBaseDeDatos(msg.from);
+  ...
+  if (
+    !(await estado?.esperandoCelular) &&
+    !(await estado?.esperandoConfirmacion)
+  ) {
+    // Verificamos primer si existe el número celular
+    if (!data || data[0]?.Found === 0) {
+      estados.set(msg.from, {
+        esperandoCelular: true,
+        cellphone: null,
+        username: msg._data.notifyName || 'Desconocido',
+      });
+      return msg.reply(
+        '¡Hola! \n🖐️No estás registrado.\nPor favor, envía tu número de celular para registrarte.',
+      );
+    } else {
+      console.log(
+        `✅ Celular número: ${data[0]?.CELLPHONE} de ${data[0]?.USER_NAME}`,
+      );
+    }
+  }
+```
+5. Almacenar el número celular en la tabla:
+```js
+async function guardarCelularEnBaseDeDatos(from, nombreUsuario, celular) {
+  const insertQuery = `
+INSERT INTO [CELULARES] ([MESSAGE_FROM], [USER_NAME], [CELLPHONE])
+    VALUES ('${from}', '${nombreUsuario}', '${celular}');`;
+
+  try {
+    await connection.query(insertQuery);
+    console.log(`✅ Celular ${celular} guardado en la base de datos.`);
+    return true;
+  } catch (err) {
+    if (await VerificarCelularEnBaseDeDatos(from)) {
+      return true;
+    } else {
+      console.error(`❌ Error guardando celular en la base de datos: ${err}`);
+      return false;
+    }
+  }
+}
+```
+6. Y esperar por el estado y validación del número para solicitar guardarlo en la BD:
+```js
+if (await estado?.esperandoCelular) {
+    const regexCelular = /^\d{10}$/; // Ajusta el rango según tus necesidades
+    const celular = msg.body.trim().toLowerCase();
+
+    if (
+      regexCelular.test(celular) &&
+      !isNaN(celular) &&
+      celular.length === 10 &&
+      celular[0] === '3'
+    ) {
+      estados.set(msg.from, {
+        esperandoCelular: true,
+        cellphone: celular,
+        username: msg._data.notifyName || 'Desconocido',
+      });
+      const { cellphone, username } = estados.get(msg.from);
+      if (await guardarCelularEnBaseDeDatos(msg.from, username, cellphone)) {
+        console.log(
+          `✅ Confirmado. Guardado de ${username} con celular ${cellphone}`,
+        );
+        estados.delete(msg.from);
+      } else {
+        return msg.reply(
+          '❌ Error guardando el número en la base de datos. Intenta de nuevo más tarde.',
+        );
+      }
+    } else {
+      return msg.reply(
+        'Número de celular no válido. Por favor, envía un número de 10 dígitos, sin espacios, sin guiones. \nEjemplo: 3876543210',
+      );
+    }
+
+    return msg.reply(
+      '✅ Confirmado. Guardado. \n\n➡️ Ahora puedes enviar los números de las boletas o una imagen con los números visibles en forma horizontal.',
+    );
+  }
+```
+7. Creamos la tabla `REGISTROS`:
+```sql
+CREATE TABLE REGISTROS (
+    IDUNIX VARCHAR(15) NOT NULL,
+    CELLPHONE DOUBLE NOT NULL,
+    BONO INT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP,
+    CONSTRAINT PK_REGISTROS PRIMARY KEY (CELLPHONE, BONO)
+);
+```
+8. Creamos la función que será llamada desde el método `probarConexionMSAccess()`:
+```js
+async function crearTablaRegistros() {
+  const createTableQuery = `
+CREATE TABLE REGISTROS (
+    IDUNIX VARCHAR(15) NOT NULL,
+    CELLPHONE DOUBLE NOT NULL,
+    BONO INT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP,
+    CONSTRAINT PK_REGISTROS PRIMARY KEY (CELLPHONE, BONO)
+);`;
+
+  await connection
+    .query(createTableQuery)
+    .then(() => console.log('✅ Tabla "REGISTROS" creada.'))
+    .catch((err) => {
+      msg = err?.process?.message ?? String(err);
+      if (msg.toLowerCase().includes('already exists'))
+        console.error('✅ Tabla "REGISTROS" Lista.');
+      else if (msg.toLowerCase().includes('object is closed'))
+        console.log('✅ Tabla "REGISTROS" creada.');
+      else console.error(`❌ ${msg}`);
+    });
+}
+```
+9. Ya hicimos el proceso de cargar en memoria una vez los números de bonos o boletas están registrados, se hace la pregunta de que sei están correctoy si la respuesta es afirmativa se graba en BD, en la tabla `REGISTROS`:
+```js
+async function guardarRegistrosEnBaseDeDatos(from) {
+  let estado = estados.get(from);
+  if (!estado || !estado.numeros || !estado.cellphone) {
+    console.error('Estado incompleto para guardar registros:', {
+      from,
+      estado,
+    });
+    return false;
+  }
+
+  console.log('numeros (inicio):', estado.numeros.join(', '));
+
+  // Trabajamos sobre una copia para evitar problemas al modificar la lista mientras iteramos
+  const snapshot = Array.isArray(estado.numeros) ? [...estado.numeros] : [];
+
+  for (const num of snapshot) {
+    const unixTimestamp = Math.floor(Date.now());
+    const cleaned = (num || '').toString().trim();
+    const insertQuery = `INSERT INTO [REGISTROS] ([IDUNIX],[CELLPHONE],[BONO]) VALUES ('${unixTimestamp}', ${estado.cellphone}, ${cleaned});`;
+
+    console.log('sql:', insertQuery);
+
+    try {
+      const data = await connection.query(insertQuery);
+      console.log('✅ MSAccess OK:', data);
+    } catch (err) {
+      const msg = err?.process?.message ?? String(err);
+
+      // Si es un duplicado, actualizamos el estado eliminando ese número y continuamos
+      if (typeof msg === 'string' && msg.toLowerCase().includes('duplicate')) {
+        // Re-lee el estado actual del Map por si cambió mientras iterábamos
+        const current = estados.get(from) || estado;
+        const updatedNumeros = (current.numeros || []).filter((n) => n !== num);
+        estados.set(from, { ...current, numeros: updatedNumeros });
+        console.log('Duplicado detectado, eliminado del estado:', num);
+        console.log(
+          'Números actuales (post-eliminación):',
+          updatedNumeros.join(', '),
+        );
+        // Actualiza variable local para reflejar el cambio en esta iteración
+        estado = estados.get(from) || estado;
+        continue;
+      }
+      if (!msg.toLowerCase().includes('object is closed')) {
+        console.error(msg);
+      }
+    }
+  }
+  return true;
+}
+```
+10. Devemos verificar lo guardado en la tabla de `REGISTROS`:
+```js
+async function VerificarRegistrosEnBaseDeDatos(from) {
+  const { cellphone, numeros, unixTimestamp } = estados.get(from);
+  const query = `SELECT * 
+    FROM [REGISTROS] 
+    WHERE [CELLPHONE] = ${cellphone}
+    AND ([BONO] IN (${numeros.join(',')})
+    OR [IDUNIX] >= '${unixTimestamp}');`;
+
+  const estado = estados.get(from);
+  try {
+    const data = await connection.query(query);
+
+    if (!data[0]) {
+      if (await estado?.esperandoConfirmacion) return;
+      console.log('❌ Números no encontrados en la base de datos:', data);
+      return null;
+    }
+    return data;
+  } catch (err) {
+    if (await estado?.esperandoConfirmacion) return;
+    console.error('❌ Error verificando números en la base de datos:', err);
+    return null;
+  }
+}
+```
+11. El llamado de esta nueva función es dentro de haber recibido una respuesta positiva:
+```js
+if (await estado?.esperandoConfirmacion) {
+    const respuesta = msg.body.trim().toLowerCase();
+
+    if (
+      respuesta === 's' ||
+      respuesta === 'si' ||
+      respuesta === 'y' ||
+      respuesta === 'yes'
+    ) {
+      if (await guardarRegistrosEnBaseDeDatos(msg.from)) {
+        const data = await VerificarRegistrosEnBaseDeDatos(msg.from);
+        const numerosGuardados = data.map((item) => item?.BONO);
+        console.log(
+          `✅ Confirmado. Guardado de ${estado.cellphone} los números: ${numerosGuardados.join(', ')}`,
+        );
+        await msg.reply(
+          `✅ Confirmado.\nGuardado de ${estado.cellphone} los números:\n* ${numerosGuardados.join('\n* ')}\nNúmero que no esté en esta lista es por ser duplicado o haberse guardado previamente.\n\n⚠️La validación final esta sujeta revisiones manuales posteriores.`,
+        );
+        estados.delete(msg.from);
+        return true;
+      }
+    }
+    if (respuesta === 'n' || respuesta === 'no') {
+      return msg.reply(
+        '*Sugerencia*:\n1️⃣ Mejora la imagen y envía de nuevo.\n2️⃣ O digita la lista de números separados por comas.',
+      );
+    }
+
+    return msg.reply('Responde S o N');
+  }
+```
+
+### 🔥 Flujo completo
+
+```mermaid
+flowchart TD
+    A[WhatsApp recibe mensaje] --> B[Consulta MS Access]
+    B --> C[Devuelve datos]
+    C --> D[Responde al usuario]
+```
+
+>[!Important]
+>
+>Esto solo funciona si:
+>
+>✅ Windows<br/>
+>✅ Access Database Engine instalado<br/>
+>✅ Archivo local accesible<br/>
+>✅ Ruta absoluta correcta
+
+>[!Warning]
+>Si falla, instala:
+>
+>👉 Microsoft Access Database Engine 2016 Redistributable
+>
+>🟢 Alternativa multiplataforma: mdb-reader
+>
+
+>[!TIP]
+>
+>### 📖 Si quieres solo leer (no escribir):
+>
+>Instala esta otra librería
+>```nginx
+>pnpm add mdb-reader
+>```
+>
+>Haz como este ejemplo:
+>```js
+>const MDBReader = require('mdb-reader')
+>const fs = require('fs')
+>
+>const buffer = fs.readFileSync('db.mdb')
+>const reader = new MDBReader(buffer)
+>
+>const tabla = reader.getTable('clientes')
+>console.log(tabla.getData())
+>```
+>
+>👉 No requiere Windows<brt/>
+>👉 Solo lectura<br/>
+>👉 Muy rápido<br/>
+
+>[!NOTE]
+>
+>### 🚀 Nivel profesional
+>
+>Puedes combinar:
+>```mermaid
+>flowchart TD
+>    A[OCR: números detectados] --> B[Buscar en MS Access]
+>    B --> C[Validar cliente / factura]
+>    C --> D[Responder automáticamente]
+>```
+>
+>Ejemplo:
+>```yaml
+>Número detectado: 12345
+>Cliente encontrado: Juan Pérez
+>Saldo: $500
+>```
+
 

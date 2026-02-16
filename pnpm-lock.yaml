@@ -8,9 +8,15 @@ importers:
 
   .:
     dependencies:
+      dotenv:
+        specifier: 17.3.1
+        version: 17.3.1
       express:
         specifier: 5.2.1
         version: 5.2.1
+      node-adodb:
+        specifier: 5.0.3
+        version: 5.0.3
       qrcode-terminal:
         specifier: 0.12.0
         version: 0.12.0
@@ -656,6 +662,9 @@ packages:
     resolution: {integrity: sha512-zbB9rCJAT1rbjiVDb2hqKFHNYLxgtk8NURxZ3IZwD3F6NtxbXZQCnnSi1Lkx+IDohdPlFp222wVALIheZJQSEg==}
     engines: {node: '>=8'}
 
+  arch@2.2.0:
+    resolution: {integrity: sha512-Of/R0wqp83cgHozfIYLbBMnej79U/SVGOOyuB3VVFv1NRM/PSFMK12x9KVtiYzJqmnU5WR2qp0Z5rHb7sWGnFQ==}
+
   archiver-utils@2.1.0:
     resolution: {integrity: sha512-bEL/yUb/fNNiNTuUz979Z0Yg5L+LzLxGJz8x79lYmR54fmTIb6ob/hNQgkQnIUDWIFjZVQwl9Xs356I6BAMHfw==}
     engines: {node: '>= 6'}
@@ -916,6 +925,10 @@ packages:
 
   devtools-protocol@0.0.1551306:
     resolution: {integrity: sha512-CFx8QdSim8iIv+2ZcEOclBKTQY6BI1IEDa7Tm9YkwAXzEWFndTEzpTo5jAUhSnq24IC7xaDw0wvGcm96+Y3PEg==}
+
+  dotenv@17.3.1:
+    resolution: {integrity: sha512-IO8C/dzEb6O3F9/twg6ZLXz164a2fhTnEWb95H23Dm4OuN+92NmEAlTrupP9VW6Jm3sO26tQlqyvyi4CsnY9GA==}
+    engines: {node: '>=12'}
 
   dunder-proto@1.0.1:
     resolution: {integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==}
@@ -1443,6 +1456,11 @@ packages:
   netmask@2.0.2:
     resolution: {integrity: sha512-dBpDMdxv9Irdq66304OLfEmQ9tbNRFnFTuZiLo+bD+r332bBmMJ8GBLXklIXXgxd3+v9+KUnZaUR5PJMa75Gsg==}
     engines: {node: '>= 0.4.0'}
+
+  node-adodb@5.0.3:
+    resolution: {integrity: sha512-xQnoe7mx3b7B0QeW6visiQ2VxlX6rYaol20Ka5jZVKcetxOsXM4lsxfEZDmlOOoVJq/6BeoqPJHm3aZ4vjY+Bg==}
+    engines: {node: '>=6.0.0'}
+    os: [win32]
 
   node-fetch@2.7.0:
     resolution: {integrity: sha512-c4FRfUm/dbcWZ7U+1Wq0AwCyFL+3nt2bEw05wfxSz+DWpWsitgmSgYmy2dQdWyKC1694ELPqMs/YzUSNozLt8A==}
@@ -2551,6 +2569,8 @@ snapshots:
     dependencies:
       color-convert: 2.0.1
 
+  arch@2.2.0: {}
+
   archiver-utils@2.1.0:
     dependencies:
       glob: 7.2.3
@@ -2832,6 +2852,8 @@ snapshots:
   depd@2.0.0: {}
 
   devtools-protocol@0.0.1551306: {}
+
+  dotenv@17.3.1: {}
 
   dunder-proto@1.0.1:
     dependencies:
@@ -3424,6 +3446,13 @@ snapshots:
   negotiator@1.0.0: {}
 
   netmask@2.0.2: {}
+
+  node-adodb@5.0.3:
+    dependencies:
+      arch: 2.2.0
+      debug: 4.4.3
+    transitivePeerDependencies:
+      - supports-color
 
   node-fetch@2.7.0:
     dependencies:
