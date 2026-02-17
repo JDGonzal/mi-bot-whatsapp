@@ -1,5 +1,7 @@
 # mi-bot-whatsapp
 
+---
+
 ## Recomendación Inicial
 
 1. Si es para aprender o un proyecto personal pequeño: Prueba la librería whatsapp-web.js. Es compatible con Node.js/Express y es la forma más rápida de "atrapar" mensajes mediante eventos.
@@ -771,6 +773,8 @@ Aumenta muchísimo la precisión.
       });
 ```
 
+---
+
 ## Flujo conversacional + Estado por usuario.
 
 WhatsApp no tiene “popups”, así que se simula una pantalla preguntando y esperando respuesta.
@@ -1113,6 +1117,7 @@ client.on('message', async (msg) => {
 
 client.initialize();
 ```
+---
 
 ## Almacenamiento en MS Access
 
@@ -1629,6 +1634,7 @@ flowchart TD
 >Saldo: $500
 >```
 
+---
 
 ## Sugerencia de ChatGPT para pruebas unitarias
 
@@ -1812,6 +1818,8 @@ Si quieres, puedo:
 
 Dime qué nivel quieres y lo armamos 😄
 
+---
+
 ## Sugerencia de Gemini para pruebas unitarias
 
 Añadir pruebas unitarias a un bot de WhatsApp que interactúa con bases de Datos (MS Access) y OCR es una excelente idea para evitar que cambios futuros rompan la lógica de registro o el flujo de conversación.
@@ -1902,5 +1910,80 @@ Y corre: `pnpm test`.
 
 ### Recomendación de "Siguiente Paso":
 
-Para poder hacer pruebas de alta calidad, tu archivo index.cjs está un poco "apretado" (mezcla conexión, lógica de bot y base de datos).
+Para poder hacer pruebas de alta calidad, tu archivo **`index.cjs`** está un poco "apretado" (mezcla conexión, lógica de bot y base de datos).
 
+---
+
+## Enviando Mensajes y reactivación de **Express**
+
+Efectivamente, no necesitas esperar a que alguien te escriba para enviarle un mensaje. Dado que ya tienes el objeto `client` inicializado en tu **`index.cjs`**, puedes usar el método `client.sendMessage()`.
+
+Lo único "truco" aquí es el formato del identificador. WhatsApp no usa solo el número de teléfono, sino un **JID** (_Jabber ID_), que normalmente es `número@c.us`.
+
+Aquí tienes cómo hacerlo y cómo integrarlo en tu lógica actual:
+
+### 1. El formato del ID
+
+Si el número de celular es `573101234567`, para enviarle un mensaje el ID debe ser:
+`573101234567@c.us`
+
+### 2. Función para enviar mensajes (en tu **`index.cjs`**)
+
+Puedes añadir esta función genérica para usarla en cualquier parte de tu código:
+
+```JavaScript
+async function enviarMensajeDirecto(numero, texto) {
+    try {
+        // Limpiamos el número por si acaso (quitar espacios o signos +)
+        const numeroLimpio = numero.replace(/\D/g, ''); 
+        const chatId = `${numeroLimpio}@c.us`;
+
+        // Verificamos si el número está registrado en WhatsApp antes de enviar
+        const esValido = await client.isRegisteredUser(chatId);
+        
+        if (esValido) {
+            await client.sendMessage(chatId, texto);
+            console.log(`✅ Mensaje enviado a ${numeroLimpio}`);
+        } else {
+            console.error('❌ El número no está registrado en WhatsApp');
+        }
+    } catch (err) {
+        console.error('❌ Error al enviar mensaje:', err);
+    }
+}
+```
+
+### 3. ¿Cómo usarlo con tus datos de MS Access?
+
+Como ya tienes una función que consulta la tabla CELULARES, podrías hacer algo así para enviar notificaciones automáticas:
+
+```JavaScript
+// Ejemplo: Notificar a un usuario específico
+async function notificarUsuario(idUsuarioBaseDatos) {
+    // Supongamos que obtienes el celular de tu base de datos
+    // Resultado de: SELECT CELLPHONE FROM CELULARES WHERE ...
+    const celular = "3001234567"; 
+    
+    // IMPORTANTE: Asegúrate de incluir el código de país (ej: 57 para Colombia)
+    const mensaje = "¡Hola! Te recordamos que tienes boletas pendientes por registrar.";
+    await enviarMensajeDirecto(`57${celular}`, mensaje);
+}
+```
+
+>[!TIP]
+>
+>### 🧠 Detalles a tener en cuenta:
+>
+>* **Código de País**: `whatsapp-web.js` requiere el código de país (prefijo). Si en tu base de datos solo guardas los 10 dígitos (ej: `310...`), deberás concatenar el prefijo manualmente (ej: `57` para Colombia) antes de enviar.
+>
+>* **Spam**: Si envías muchos mensajes a números que no te tienen guardado en sus contactos y que nunca te han escrito antes, WhatsApp detectará tu bot rápidamente y podría banearte.
+>
+>* **Uso con Express**: Si quieres disparar estos mensajes desde un botón en tu frontend de React, podrías crear una ruta en Express:
+>
+>```JavaScript
+>app.post('/enviar-alerta', async (req, res) => {
+>    const { numero, mensaje } = req.body;
+>    await enviarMensajeDirecto(numero, mensaje);
+>    res.json({ status: 'Procesado' });
+>});
+>```
