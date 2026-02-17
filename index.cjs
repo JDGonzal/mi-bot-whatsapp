@@ -111,7 +111,7 @@ async function VerificarCelularEnBaseDeDatos(from) {
   const estado = estados.get(from);
   if ((await from) === 'status@broadcast') {
     estados.delete(from);
-    return null;
+    return [{ CELLPHONE: 0, USER_NAME: 'Broadcast' }];
   }
   try {
     const result = await connection.query(query1);
@@ -261,7 +261,8 @@ client.on('message', async (msg) => {
     if (
       numeros &&
       !(await estado?.esperandoCelular) &&
-      !(await estado?.esperandoConfirmacion)
+      !(await estado?.esperandoConfirmacion) &&
+      !(msg.from === 'status@broadcast')
     ) {
       estados.set(msg.from, {
         esperandoConfirmacion: true,
@@ -279,7 +280,8 @@ client.on('message', async (msg) => {
 
   if (
     !(await estado?.esperandoCelular) &&
-    !(await estado?.esperandoConfirmacion)
+    !(await estado?.esperandoConfirmacion) &&
+    !(msg.from === 'status@broadcast')
   ) {
     // Verificamos primer si existe el número celular
     if (!data || data[0]?.Found === 0) {
@@ -375,7 +377,7 @@ client.on('message', async (msg) => {
   }
 
   // ===== Caso: mensaje con imagen =====
-  if (msg.hasMedia) {
+  if (msg.hasMedia && !msg.from === 'status@broadcast') {
     try {
       const media = await msg.downloadMedia();
       const buffer = Buffer.from(media.data, 'base64');

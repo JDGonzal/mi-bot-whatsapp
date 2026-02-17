@@ -1630,3 +1630,277 @@ flowchart TD
 >```
 
 
+## Sugerencia de ChatGPT para pruebas unitarias
+
+Sí — se pueden y se deben 😄
+Aunque tu archivo sea un bot + OCR + DB, puedes testear la lógica si separas responsabilidades.
+
+Ahora mismo tu index.cjs mezcla:
+
+👉 WhatsApp<br/>
+👉 OCR<br/>
+👉 Access<br/>
+👉 estado conversacional<br/>
+
+Eso es difícil de testear directo.
+
+La clave es:
+
+>extraer funciones puras y mockear dependencias
+
+### ✅ Qué partes sí se pueden testear
+
+Estas son las mejores candidatas:
+
+#### 1. OCR → extracción de números
+
+Función:
+```js
+leerNumeros(buffer)
+```
+Test:
+
+✔ detecta números<br/>
+✔ ignora texto<br/>
+✔ retorna null si no hay números<br/>
+
+#### 2. Estado conversacional
+
+Mapa:
+```js
+estados
+```
+Tests:
+
+✔ guarda estado<br/>
+✔ cambia a confirmado<br/>
+✔ elimina estado<br/>
+✔ maneja respuesta inválida<br/>
+
+#### 3. Parser de respuestas S/N
+
+Función sugerida:
+```js
+function interpretarRespuesta(texto) {
+  const r = texto.trim().toLowerCase()
+  if (r === 's') return 'ok'
+  if (r === 'n') return 'retry'
+  return 'invalid'
+}
+```
+Test:
+
+✔ "S" → ok<br/>
+✔ "n" → retry<br/>
+✔ basura → invalid<br/>
+
+#### 4. Query builder Access
+
+Si construyes SQL dinámico:
+
+✔ escapa valores<br/>
+✔ encierra columnas en []<br/>
+✔ evita SQL injection<br/>
+
+### 🔥 Qué NO testear directamente
+
+❌ WhatsApp real<br/>
+❌ Access real<br/>
+❌ Tesseract real<br/>
+
+Eso se mockea.
+
+Los unit tests no deben depender de:
+
+* red
+* drivers
+* archivos reales
+* WhatsApp abierto
+
+### ✅ Framework recomendado
+
+Instala:
+```bash
+npm install --save-dev jest
+```
+En package.json:
+```json
+"scripts": {
+  "test": "jest"
+}
+```
+
+### 🧪 Ejemplo real de test
+
+Archivo: **`leerNumeros.test.js`**
+```js
+const { interpretarRespuesta } = require('./utils')
+
+test('interpreta S como confirmación', () => {
+  expect(interpretarRespuesta('S')).toBe('ok')
+})
+
+test('interpreta n como retry', () => {
+  expect(interpretarRespuesta('n')).toBe('retry')
+})
+
+test('texto inválido', () => {
+  expect(interpretarRespuesta('hola')).toBe('invalid')
+})
+```
+
+### ✅ Mock de OCR
+
+```js
+jest.mock('tesseract.js', () => ({
+  recognize: jest.fn(() =>
+    Promise.resolve({ data: { text: '123 ABC 456' } })
+  )
+}))
+```
+Test:
+```js
+test('extrae números', async () => {
+  const nums = await leerNumeros(Buffer.from('fake'))
+  expect(nums).toEqual(['123', '456'])
+})
+```
+
+### 🧠 Tests que yo haría en tu proyecto
+
+Prioridad alta:
+
+✅ extracción de números<br/>
+✅ manejo de estado por usuario<br/>
+✅ confirmación S/N<br/>
+✅ reprocesamiento de imagen<br/>
+✅ builder SQL<br/>
+✅ manejo de errores<br/>
+
+Prioridad media:
+
+✅ límites de reintentos<br/>
+✅ limpieza de estado<br/>
+✅ respuestas inválidas<br/>
+✅ concurrencia de usuarios<br/>
+
+### 🚀 Bonus profesional
+
+Separar tu proyecto así:
+```dos
+bot/
+ocr.js
+estado.js
+db.js
+utils.js
+index.cjs
+tests/
+```
+Cada archivo → test independiente.
+
+Eso convierte tu bot en software serio.
+
+Si quieres, puedo:
+
+✅ refactorizar tu index.cjs para testear<br/>
+✅ escribir suite Jest completa<br/>
+✅ mocks de WhatsApp<br/>
+✅ mocks de Access<br/>
+✅ cobertura 90%+<br/>
+✅ pipeline CI/CD<br/>
+✅ test automático en GitHub<br/>
+
+Dime qué nivel quieres y lo armamos 😄
+
+## Sugerencia de Gemini para pruebas unitarias
+
+Añadir pruebas unitarias a un bot de WhatsApp que interactúa con bases de Datos (MS Access) y OCR es una excelente idea para evitar que cambios futuros rompan la lógica de registro o el flujo de conversación.
+
+Para este entorno, te recomiendo usar **Jest**, que es el framework de pruebas más estándar en Node.js.
+
+### 1. Instalación de herramientas de test
+
+Ejecuta en tu terminal:
+
+```Bash
+npm install --save-dev jest
+```
+
+### 2. ¿Qué deberías probar? (Estrategia)
+
+No es recomendable probar la conexión real a WhatsApp o a MS Access en pruebas unitarias (eso serian pruebas de integración). Debes probar la lógica de negocio aislando las funciones.
+
+Los candidatos ideales para pruebas son:
+
+1. Validación de números celulares: Que el regex funcione (10 dígitos, empieza por 3).
+2. Procesamiento de texto OCR: Que el filtrado de números (match(/\d+/g)) sea correcto.
+3. estión de estados: Que la lógica de "si está en estado X, responda Y" funcione.
+
+### 3. Ejemplo de archivo de prueba (index.test.cjs)
+
+Primero, para que las funciones sean testeables, deberías exportarlas al final de tu **`index.cjs`**:
+
+```JavaScript
+module.exports = { leerNumeros, regexCelular: /^\d{10}$/ }; // 
+```
+Ejemplo de exportación
+Luego, crea un archivo **`test/logic.test.js`**:
+
+```JavaScript
+const { leerNumeros } = require('../index.cjs');
+
+// Mock de Tesseract para no ejecutar el OCR real en los tests (ahorra tiempo y recursos)
+jest.mock('tesseract.js', () => ({
+  recognize: jest.fn().mockResolvedValue({
+    data: { text: 'Hola, mi bono es 12345 y el otro 67890' }
+  })
+}));
+
+describe('Pruebas de Lógica del Bot', () => {
+  
+  test('La función leerNumeros debe extraer solo dígitos del texto OCR', async () => {
+    const fakeBuffer = Buffer.from('');
+    const numeros = await leerNumeros(fakeBuffer);
+    
+    expect(numeros).toEqual(['12345', '67890']);
+    expect(numeros).not.toContain('Hola');
+  });
+
+  test('Validación de formato de celular (Regex)', () => {
+    const regexCelular = /^\d{10}$/;
+    const numCorrecto = "3101234567";
+    const numCorto = "310123";
+    const numLetras = "310abc4567";
+
+    expect(regexCelular.test(numCorrecto)).toBe(true);
+    expect(regexCelular.test(numCorto)).toBe(false);
+    expect(regexCelular.test(numLetras)).toBe(false);
+  });
+});
+```
+
+### 4. Pruebas de Flujo (Mocks de Base de Datos)
+
+Dado que usas `node-adodb`, puedes probar si tu lógica de inserción maneja bien los errores. Por ejemplo, podrías simular un error de "Duplicado" en MS Access y verificar que tu función `guardarRegistrosEnBaseDeDatos` lo maneje correctamente sin detenerse.
+
+**¿Cómo hacerlo?**
+
+1. **Refactoriza**: Mueve la lógica de la base de datos a un archivo separado (ej. db.cjs).
+
+2. **Inyecta dependencias**: En tus tests, sustituye connection.query por una función falsa (jest.fn()) que devuelva un error de duplicado.
+
+### 5. Cómo ejecutar los tests
+
+Agrega esto a tu package.json:
+
+```JSON
+"scripts": {
+  "test": "jest"
+}
+```
+Y corre: `pnpm test`.
+
+### Recomendación de "Siguiente Paso":
+
+Para poder hacer pruebas de alta calidad, tu archivo index.cjs está un poco "apretado" (mezcla conexión, lógica de bot y base de datos).
+
