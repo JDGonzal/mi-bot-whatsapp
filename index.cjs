@@ -1,10 +1,16 @@
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode-terminal');
+const express = require('express');
 const Tesseract = require('tesseract.js');
 const dotenv = require('dotenv');
 dotenv.config();
 const ADODB = require('node-adodb');
 ADODB.debug = true;
+
+// ==== Definición del servicio API con express =====
+const app = express();
+const port = process.env.PORT || 3000;
+app.use(express.json());
 
 // ===== Estado por usuario =====
 const estados = new Map();
@@ -22,6 +28,31 @@ const client = new Client({
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   },
 });
+
+let isQRRecharged = false;
+
+// ====== Enviar Mensajes directos =====
+async function enviarMensajeDirecto(numero, texto) {
+  try {
+    // Limpiamos el número por si acaso (quitar espacios o signos +)
+    const numeroLimpio = numero.replace(/\D/g, '');
+    const chatId = `${numeroLimpio}@c.us`;
+
+    // Verificamos si el número está registrado en WhatsApp antes de enviar
+    const esValido = await client.isRegisteredUser(chatId);
+
+    if (esValido) {
+      await client.sendMessage(chatId, texto);
+      if (!numeroLimpio.includes('3173450213')) {
+        console.log(`➡️  Mensaje enviado a ${numeroLimpio}`);
+      }
+    } else {
+      console.error(`💡 Registra este número en WhatsApp: ${numeroLimpio}`);
+    }
+  } catch (err) {
+    console.error('❌ Error al enviar mensaje:', err);
+  }
+}
 
 // ===== Configuración ADODB =====
 const connection = ADODB.open(
@@ -88,8 +119,17 @@ async function probarConexionMSAccess() {
   try {
     const test = await connection.query(testQuery);
     console.log('✅ Conexión exitosa a MSAccess:', test);
+    const timestamp = new Date().toLocaleTimeString();
+    let msg = `${timestamp}`;
+    if (isQRRecharged) {
+      msg = `QR Recargado - ${timestamp}`;
+      isQRRecharged = false;
+    }
+    //! VARIABLES DE AMBIENTE
+    //* console.log(process.env.SystemRoot) // =C:\WINDOWS
     await crearTablaCelulares();
     await crearTablaRegistros();
+    await enviarMensajeDirecto('573173450213', msg);
     return true;
   } catch (err) {
     console.error('❌ Error de conexión:');
@@ -177,14 +217,14 @@ INSERT INTO [CELULARES] ([MESSAGE_FROM], [USER_NAME], [CELLPHONE])
 async function guardarRegistrosEnBaseDeDatos(from) {
   let estado = estados.get(from);
   if (!estado || !estado.numeros || !estado.cellphone) {
-    console.error('Estado incompleto para guardar registros:', {
+    console.error('❌ Estado incompleto para guardar registros:', {
       from,
       estado,
     });
     return false;
   }
 
-  console.log('numeros (inicio):', estado.numeros.join(', '));
+  console.log('1️⃣ numeros (inicio):', estado.numeros.join(', '));
 
   // Trabajamos sobre una copia para evitar problemas al modificar la lista mientras iteramos
   const snapshot = Array.isArray(estado.numeros) ? [...estado.numeros] : [];
@@ -194,11 +234,11 @@ async function guardarRegistrosEnBaseDeDatos(from) {
     const cleaned = (num || '').toString().trim();
     const insertQuery = `INSERT INTO [REGISTROS] ([IDUNIX],[CELLPHONE],[BONO]) VALUES ('${unixTimestamp}', ${estado.cellphone}, ${cleaned});`;
 
-    console.log('sql:', insertQuery);
+    console.log('2️⃣ sql:', insertQuery);
 
     try {
       const data = await connection.query(insertQuery);
-      console.log('✅ MSAccess OK:', data);
+      console.log('3️⃣ MSAccess OK:', data);
     } catch (err) {
       const msg = err?.process?.message ?? String(err);
 
@@ -208,9 +248,9 @@ async function guardarRegistrosEnBaseDeDatos(from) {
         const current = estados.get(from) || estado;
         const updatedNumeros = (current.numeros || []).filter((n) => n !== num);
         estados.set(from, { ...current, numeros: updatedNumeros });
-        console.log('Duplicado detectado, eliminado del estado:', num);
+        console.log('4️⃣ Duplicado detectado, eliminado del estado:', num);
         console.log(
-          'Números actuales (post-eliminación):',
+          '5️⃣ Números actuales (post-eliminación):',
           updatedNumeros.join(', '),
         );
         // Actualiza variable local para reflejar el cambio en esta iteración
@@ -218,7 +258,7 @@ async function guardarRegistrosEnBaseDeDatos(from) {
         continue;
       }
       if (!msg.toLowerCase().includes('object is closed')) {
-        console.error(msg);
+        console.error(`❌ ${msg}`);
       }
     }
   }
@@ -228,10 +268,11 @@ async function guardarRegistrosEnBaseDeDatos(from) {
 // ===== Eventos del cliente =====
 client.on('qr', (qr) => {
   console.clear();
-  console.log('Escanea este QR con tu WhatsApp:');
+  isQRRecharged = true;
+  console.log('🅿️ Escanea este QR con tu WhatsApp:');
   qrcode.generate(qr, { small: true });
   const timestamp = new Date().toLocaleTimeString();
-  console.log(`[${timestamp}] QR generado, esperando escaneo...`);
+  console.log(`⏰ [${timestamp}] QR generado, esperando escaneo...`);
 });
 
 client.on('ready', async () => {
@@ -251,7 +292,7 @@ async function leerNumeros(buffer) {
 
 // ===== Listener principal =====
 client.on('message', async (msg) => {
-  console.log(`Mensaje recibido de ${msg.from}: ${msg.body}`);
+  console.log(`⬅️  Mensaje recibido de ${msg.from}: ${msg.body}`);
   const texto = msg.body;
   const numeros = texto.match(/\d+/g);
   const estado = estados.get(msg.from);
@@ -271,9 +312,9 @@ client.on('message', async (msg) => {
         cellphone: data[0]?.CELLPHONE,
         unixTimestamp: Math.floor(Date.now()),
       });
-      console.log(`Números detectados: ${numeros.join(', ')}`);
+      console.log(`#️⃣ Números detectados: ${numeros.join(', ')}`);
       return msg.reply(
-        `Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
+        `#️⃣ Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
       );
     }
   }
@@ -296,7 +337,7 @@ client.on('message', async (msg) => {
     }
     if (data) {
       console.log(
-        `✅ Celular número: ${data[0]?.CELLPHONE} de ${data[0]?.USER_NAME}`,
+        `☎️  Celular número: ${data[0]?.CELLPHONE} de ${data[0]?.USER_NAME}`,
       );
     }
   }
@@ -320,10 +361,10 @@ client.on('message', async (msg) => {
         const data = await VerificarRegistrosEnBaseDeDatos(msg.from);
         const numerosGuardados = data.map((item) => item?.BONO);
         console.log(
-          `✅ Confirmado. Guardado de ${estado.cellphone} los números: ${numerosGuardados.join(', ')}`,
+          `💾 Confirmado. Guardado de ${estado.cellphone} los números: ${numerosGuardados.join(', ')}`,
         );
         await msg.reply(
-          `✅ Confirmado.\nGuardado de ${estado.cellphone} los números:\n* ${numerosGuardados.join('\n* ')}\nNúmero que no esté en esta lista es por ser duplicado o haberse guardado previamente.\n\n⚠️La validación final esta sujeta revisiones manuales posteriores.`,
+          `💾 Confirmado.\nGuardado de ${estado.cellphone} los números:\n* ${numerosGuardados.join('\n* ')}\nNúmero que no esté en esta lista es por ser duplicado o haberse guardado previamente.\n\n⚠️La validación final esta sujeta revisiones manuales posteriores.`,
         );
         estados.delete(msg.from);
         return true;
@@ -331,11 +372,11 @@ client.on('message', async (msg) => {
     }
     if (respuesta === 'n' || respuesta === 'no') {
       return msg.reply(
-        '*Sugerencia*:\n1️⃣ Mejora la imagen y envía de nuevo.\n2️⃣ O digita la lista de números separados por comas.',
+        '💡 *Sugerencia*:\n1️⃣ Mejora la imagen y envía de nuevo.\n2️⃣ O digita la lista de números separados por comas.',
       );
     }
 
-    return msg.reply('Responde S o N');
+    return msg.reply('✏️ Responde S o N');
   }
 
   // ===== Caso: esperando celular =====
@@ -357,7 +398,7 @@ client.on('message', async (msg) => {
       const { cellphone, username } = estados.get(msg.from);
       if (await guardarCelularEnBaseDeDatos(msg.from, username, cellphone)) {
         console.log(
-          `✅ Confirmado. Guardado de ${username} con celular ${cellphone}`,
+          `💾 Confirmado. Guardado de ${username} con celular ${cellphone}`,
         );
         estados.delete(msg.from);
       } else {
@@ -367,12 +408,12 @@ client.on('message', async (msg) => {
       }
     } else {
       return msg.reply(
-        'Número de celular no válido. Por favor, envía un número de 10 dígitos, sin espacios, sin guiones. \nEjemplo: 3876543210',
+        '⚠️ Número de celular no válido. Por favor, envía un número de 10 dígitos, sin espacios, sin guiones. \nEjemplo: 3876543210',
       );
     }
 
     return msg.reply(
-      '✅ Confirmado. Guardado. \n\n➡️ Ahora puedes enviar los números de las boletas o una imagen con los números visibles en forma horizontal.',
+      '💾 Confirmado. Guardado. \n\n➡️ Ahora puedes enviar los números de las boletas o una imagen con los números visibles en forma horizontal.',
     );
   }
 
@@ -385,7 +426,7 @@ client.on('message', async (msg) => {
       const numeros = await leerNumeros(buffer);
 
       if (!numeros) {
-        return msg.reply('No detecté números en la imagen');
+        return msg.reply('🚨 No detecté números en la imagen');
       }
 
       estados.set(msg.from, {
@@ -393,16 +434,45 @@ client.on('message', async (msg) => {
         numeros,
         buffer,
       });
-      console.log(`Números detectados: ${numeros.join(', ')}`);
+      console.log(`ℹ️ Números detectados: ${numeros.join(', ')}`);
       return msg.reply(
-        `Números detectados: ${numeros.join(', ')}\n\n❔¿Están correctos? S/N`,
+        `ℹ️ Números detectados: ${numeros.join(', ')}\n\n❔¿Están correctos? S/N`,
       );
     } catch (err) {
-      console.log('Error leyendo la imagen');
+      console.log('❌ Error leyendo la imagen');
       console.error(err);
-      msg.reply('Error leyendo la imagen');
+      msg.reply('❌ Error leyendo la imagen');
     }
   }
 });
 
 client.initialize();
+
+// ==== Rutas de API Express
+/**
+ * *GET '/'
+ *
+ * @param {} none or empty
+ * @returns {string} shows active server
+ */
+app.get('/', (req, res) => {
+  res.send('Servidor de WhatsApp funcionando 🚀');
+});
+
+/**
+ * *POST '/enviar-alerta'
+ *
+ * @param {string} numero - telephone number
+ * @param {string} mensaje - Text to send
+ * @returns {string} status - answer
+ */
+app.post('/enviar-alerta', async (req, res) => {
+  const { numero, mensaje } = req.body;
+  await enviarMensajeDirecto(numero, mensaje);
+  res.json({ status: 'Procesado' });
+});
+
+// ==== Escucha de Server API de express ===
+app.listen(port, () => {
+  console.log(`✅ Servidor Express corriendo en http://localhost:${port}`);
+});
