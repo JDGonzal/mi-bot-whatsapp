@@ -15,21 +15,8 @@ app.use(express.json());
 // ===== Estado por usuario =====
 const estados = new Map();
 
-// ===== Cliente WhatsApp =====
-const client = new Client({
-  authStrategy: new LocalAuth(), // Guarda la sesión para no escanear QR siempre
-  puppeteer: {
-    headless: true, // Cambia a false si quieres ver el navegador abrirse
-    //args: ['--no-sandbox'], // tengo un error asi que lo cambio
-    // Reemplaza esta ruta por la de tu Chrome si es distinta
-    executablePath:
-      process.env.CHROME_PATH ||
-      'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
-  },
-});
-
 let isQRRecharged = false;
+let client = null; // el cliente será creado por startClient(), no al cargar el módulo
 
 // ====== Enviar Mensajes directos =====
 async function enviarMensajeDirecto(numero, texto) {
@@ -132,10 +119,11 @@ async function probarConexionMSAccess() {
     await enviarMensajeDirecto('573173450213', msg);
     return true;
   } catch (err) {
-    console.error('❌ Error de conexión:');
+    msg = err?.process?.message ?? String(err);
+    console.error('↪️ Verificando conexión MSAccess, porque:', msg);
     await connection
       .query(testQuery)
-      .then((data) => console.log('✅ MSAccess OK:', data))
+      .then((data) => console.log('✅ Conexión exitos a MSAccess:', data))
       .catch((err) => console.error(err));
     return false;
   }
@@ -160,7 +148,7 @@ async function VerificarCelularEnBaseDeDatos(from) {
       return data;
     } else {
       if (await estado?.esperandoCelular) return;
-      console.log('❌ Número no encontrado en la base de datos:', result);
+      console.log('🔍 Número celular no hallado en la base de datos:', result);
       return null;
     }
   } catch (err) {
@@ -265,188 +253,330 @@ async function guardarRegistrosEnBaseDeDatos(from) {
   return true;
 }
 
-// ===== Eventos del cliente =====
-client.on('qr', (qr) => {
-  console.clear();
-  isQRRecharged = true;
-  console.log('🅿️ Escanea este QR con tu WhatsApp:');
-  qrcode.generate(qr, { small: true });
-  const timestamp = new Date().toLocaleTimeString();
-  console.log(`⏰ [${timestamp}] QR generado, esperando escaneo...`);
-});
+// ===== Eventos del cliente y lógica de reinicio resiliente =====
+// Constantes de control
+const READY_TIMEOUT_MS = Number(process.env.READY_TIMEOUT_MS) || 45_000; // tiempo máximo para esperar 'ready'
+const RESTART_BASE_MS = Number(process.env.RESTART_BASE_MS) || 5_000; // backoff base
+const RESTART_MAX_MS = Number(process.env.RESTART_MAX_MS) || 60_000;
 
-client.on('ready', async () => {
-  console.log('✅ Bot listo y conectado a WhatsApp.');
-  probarConexionMSAccess();
-});
+let readyTimer = null;
+let restartAttempts = 0;
+let shuttingDownClient = false;
+
+function createClientInstance() {
+  try {
+    return new Client({
+      authStrategy: new LocalAuth(),
+      puppeteer: {
+        headless: true,
+        executablePath:
+          process.env.CHROME_PATH ||
+          'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      },
+    });
+  } catch (err) {
+    console.error('Error creando instancia de Client:', err);
+  }
+}
+
+function clearReadyTimer() {
+  if (readyTimer) {
+    clearTimeout(readyTimer);
+    readyTimer = null;
+  }
+}
+
+function scheduleRestart(reason) {
+  if (shuttingDownClient) return;
+  restartAttempts++;
+  const delay = Math.min(
+    RESTART_MAX_MS,
+    RESTART_BASE_MS * 2 ** (restartAttempts - 1),
+  );
+  console.warn(
+    `🔂 Reiniciando cliente por: "${reason}". Intento ${restartAttempts} en ${delay}ms`,
+  );
+  setTimeout(() => startClient(), delay);
+}
+
+async function safeDestroyClient() {
+  if (!client) return;
+  try {
+    shuttingDownClient = true;
+    client.removeAllListeners();
+    await client.destroy();
+  } catch (err) {
+    console.warn('Error destroying client:', err);
+  } finally {
+    client = null;
+    shuttingDownClient = false;
+  }
+}
 
 // ===== Función OCR =====
 async function leerNumeros(buffer) {
   const result = await Tesseract.recognize(buffer, 'eng', {
     tessedit_char_whitelist: '0123456789',
   });
-
+  console.log('👀 Leyendo imagen...');
   const texto = result.data.text;
   return texto.match(/\d+/g);
 }
 
-// ===== Listener principal =====
-client.on('message', async (msg) => {
-  console.log(`⬅️  Mensaje recibido de ${msg.from}: ${msg.body}`);
-  const texto = msg.body;
-  const numeros = texto.match(/\d+/g);
-  const estado = estados.get(msg.from);
-  const data = await VerificarCelularEnBaseDeDatos(msg.from);
+function attachClientHandlers(c) {
+  // QR
+  c.on('qr', (qr) => {
+    console.clear();
+    isQRRecharged = true;
+    console.log('🅿️ Escanea este QR con tu WhatsApp:');
+    qrcode.generate(qr, { small: true });
+    const timestamp = new Date().toLocaleTimeString();
+    console.log(`⏰ [${timestamp}] QR generado, esperando escaneo...`);
+  });
 
-  if (data) {
+  // Ready
+  c.on('ready', async () => {
+    clearReadyTimer();
+    restartAttempts = 0;
+    console.log('✅ Bot listo y conectado a WhatsApp.');
+    try {
+      await probarConexionMSAccess();
+    } catch (err) {
+      console.error('Error en probarConexionMSAccess:', err);
+    }
+  });
+
+  // Auth failure
+  c.on('auth_failure', (msg) => {
+    try {
+      clearReadyTimer();
+      console.error('🔐 auth_failure:', msg);
+      safeDestroyClient().then(() => scheduleRestart('auth_failure'));
+    } catch (err) {
+      console.error('Error en auth_failure handler:', err);
+    }
+  });
+
+  // Disconnected
+  c.on('disconnected', (reason) => {
+    try{
+    clearReadyTimer();
+    console.warn('📴 disconnected:', reason);
+    safeDestroyClient().then(() => scheduleRestart('disconnected'));
+    } catch (err) {
+      console.error('Error en disconnected handler:', err);
+    }
+  });
+
+  // Optional state change log
+  c.on('change_state', (state) => {
+    console.log('Estado del cliente:', state);
+  });
+
+  // Message handler (se mantiene la lógica original)
+  c.on('message', async (msg) => {
+    console.log(
+      `⬅️  Mensaje recibido de ${msg.from}: ${msg.body || msg.caption || '[media]'} (hasMedia: ${msg.hasMedia})`,
+    );
+    const texto = msg.body;
+    const numeros = texto.match(/\d+/g);
+    const estado = estados.get(msg.from);
+    const data = await VerificarCelularEnBaseDeDatos(msg.from);
+
+    if (data) {
+      if (
+        numeros &&
+        !(await estado?.esperandoCelular) &&
+        !(await estado?.esperandoConfirmacion) &&
+        !(msg.from === 'status@broadcast')
+      ) {
+        estados.set(msg.from, {
+          esperandoConfirmacion: true,
+          numeros,
+          texto,
+          cellphone: data[0]?.CELLPHONE,
+          unixTimestamp: Math.floor(Date.now()),
+        });
+        console.log(`#️⃣  Números detectados: ${numeros.join(', ')}`);
+        return msg.reply(
+          `#️⃣  Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
+        );
+      }
+    }
+
     if (
-      numeros &&
       !(await estado?.esperandoCelular) &&
       !(await estado?.esperandoConfirmacion) &&
       !(msg.from === 'status@broadcast')
     ) {
-      estados.set(msg.from, {
-        esperandoConfirmacion: true,
-        numeros,
-        texto,
-        cellphone: data[0]?.CELLPHONE,
-        unixTimestamp: Math.floor(Date.now()),
-      });
-      console.log(`#️⃣ Números detectados: ${numeros.join(', ')}`);
-      return msg.reply(
-        `#️⃣ Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
-      );
-    }
-  }
-
-  if (
-    !(await estado?.esperandoCelular) &&
-    !(await estado?.esperandoConfirmacion) &&
-    !(msg.from === 'status@broadcast')
-  ) {
-    // Verificamos primer si existe el número celular
-    if (!data || data[0]?.Found === 0) {
-      estados.set(msg.from, {
-        esperandoCelular: true,
-        cellphone: null,
-        username: msg._data.notifyName || 'Desconocido',
-      });
-      return msg.reply(
-        '¡Hola! \n🖐️No estás registrado.\nPor favor, envía tu número de celular para registrarte.',
-      );
-    }
-    if (data) {
-      console.log(
-        `☎️  Celular número: ${data[0]?.CELLPHONE} de ${data[0]?.USER_NAME}`,
-      );
-    }
-  }
-
-  if (msg.body.toLowerCase() === 'hola') {
-    return msg.reply(
-      '¡Hola! \n➡️Por favor digita los números de las boletas separados por comas o envía una imagen con los números visibles en forma horizontal.',
-    );
-  }
-  // ===== Caso: esperando confirmación =====
-  if (await estado?.esperandoConfirmacion) {
-    const respuesta = msg.body.trim().toLowerCase();
-
-    if (
-      respuesta === 's' ||
-      respuesta === 'si' ||
-      respuesta === 'y' ||
-      respuesta === 'yes'
-    ) {
-      if (await guardarRegistrosEnBaseDeDatos(msg.from)) {
-        const data = await VerificarRegistrosEnBaseDeDatos(msg.from);
-        const numerosGuardados = data.map((item) => item?.BONO);
+      // Verificamos primer si existe el número celular
+      if (!data || data[0]?.Found === 0) {
+        estados.set(msg.from, {
+          esperandoCelular: true,
+          cellphone: null,
+          username: msg._data.notifyName || 'Desconocido',
+        });
+        return msg.reply(
+          '¡Hola! \n🖐️No estás registrado.\nPor favor, envía tu número de celular para registrarte.',
+        );
+      }
+      if (data) {
         console.log(
-          `💾 Confirmado. Guardado de ${estado.cellphone} los números: ${numerosGuardados.join(', ')}`,
+          `☎️  Celular número: ${data[0]?.CELLPHONE} de ${data[0]?.USER_NAME}`,
         );
-        await msg.reply(
-          `💾 Confirmado.\nGuardado de ${estado.cellphone} los números:\n* ${numerosGuardados.join('\n* ')}\nNúmero que no esté en esta lista es por ser duplicado o haberse guardado previamente.\n\n⚠️La validación final esta sujeta revisiones manuales posteriores.`,
-        );
-        estados.delete(msg.from);
-        return true;
       }
     }
-    if (respuesta === 'n' || respuesta === 'no') {
+
+    if (msg.body.toLowerCase() === 'hola') {
       return msg.reply(
-        '💡 *Sugerencia*:\n1️⃣ Mejora la imagen y envía de nuevo.\n2️⃣ O digita la lista de números separados por comas.',
+        '¡Hola! \n➡️Por favor digita los números de las boletas separados por comas o envía una imagen con los números visibles en forma horizontal.',
       );
     }
+    // ===== Caso: esperando confirmación =====
+    if (await estado?.esperandoConfirmacion) {
+      const respuesta = msg.body.trim().toLowerCase();
 
-    return msg.reply('✏️ Responde S o N');
-  }
-
-  // ===== Caso: esperando celular =====
-  if (await estado?.esperandoCelular) {
-    const regexCelular = /^\d{10}$/; // Ajusta el rango según tus necesidades
-    const celular = msg.body.trim().toLowerCase();
-
-    if (
-      regexCelular.test(celular) &&
-      !isNaN(celular) &&
-      celular.length === 10 &&
-      celular[0] === '3'
-    ) {
-      estados.set(msg.from, {
-        esperandoCelular: true,
-        cellphone: celular,
-        username: msg._data.notifyName || 'Desconocido',
-      });
-      const { cellphone, username } = estados.get(msg.from);
-      if (await guardarCelularEnBaseDeDatos(msg.from, username, cellphone)) {
-        console.log(
-          `💾 Confirmado. Guardado de ${username} con celular ${cellphone}`,
+      if (
+        respuesta === 's' ||
+        respuesta === 'si' ||
+        respuesta === 'y' ||
+        respuesta === 'yes'
+      ) {
+        if (await guardarRegistrosEnBaseDeDatos(msg.from)) {
+          const data = await VerificarRegistrosEnBaseDeDatos(msg.from);
+          const numerosGuardados = data.map((item) => item?.BONO);
+          console.log(
+            `💾 Confirmado. Guardado de ${estado.cellphone} los números: ${numerosGuardados.join(', ')}`,
+          );
+          await msg.reply(
+            `💾 Confirmado.\nGuardado de ${estado.cellphone} los números:\n* ${numerosGuardados.join('\n* ')}\nNúmero que no esté en esta lista es por ser duplicado o haberse guardado previamente.\n\n⚠️La validación final estará sujeta a revisiones manuales posteriores.`,
+          );
+          estados.delete(msg.from);
+          return true;
+        }
+      }
+      if (respuesta === 'n' || respuesta === 'no') {
+        return msg.reply(
+          '💡 *Sugerencia*:\n1️⃣ Mejora la imagen y envía de nuevo.\n2️⃣ O digita la lista de números separados por comas.',
         );
-        estados.delete(msg.from);
+      }
+
+      return msg.reply('✏️ Responde S o N');
+    }
+
+    // ===== Caso: esperando celular =====
+    if (await estado?.esperandoCelular) {
+      const regexCelular = /^\d{10}$/; // Ajusta el rango según tus necesidades
+      const celular = msg.body.trim().toLowerCase();
+
+      if (
+        regexCelular.test(celular) &&
+        !isNaN(celular) &&
+        celular.length === 10 &&
+        celular[0] === '3'
+      ) {
+        estados.set(msg.from, {
+          esperandoCelular: true,
+          cellphone: celular,
+          username: msg._data.notifyName || 'Desconocido',
+        });
+        const { cellphone, username } = estados.get(msg.from);
+        if (await guardarCelularEnBaseDeDatos(msg.from, username, cellphone)) {
+          console.log(
+            `💾 Confirmado. Guardado de "${username}" con celular '${cellphone}'`,
+          );
+          estados.delete(msg.from);
+        } else {
+          return msg.reply(
+            '❌ Error guardando el número en la base de datos. Intenta de nuevo más tarde.',
+          );
+        }
       } else {
         return msg.reply(
-          '❌ Error guardando el número en la base de datos. Intenta de nuevo más tarde.',
+          '⚠️ Número de celular no válido. Por favor, envía un número de 10 dígitos, sin espacios, sin guiones. \nEjemplo: 3876543210',
         );
       }
-    } else {
+
       return msg.reply(
-        '⚠️ Número de celular no válido. Por favor, envía un número de 10 dígitos, sin espacios, sin guiones. \nEjemplo: 3876543210',
+        '💾 Confirmado. Guardado. \n\n➡️ Ahora puedes enviar los números de las boletas o una imagen con los números visibles en forma horizontal.',
       );
     }
 
-    return msg.reply(
-      '💾 Confirmado. Guardado. \n\n➡️ Ahora puedes enviar los números de las boletas o una imagen con los números visibles en forma horizontal.',
-    );
-  }
+    // ===== Caso: mensaje con imagen =====
+    if (msg.hasMedia && msg.from !== 'status@broadcast') {
+      try {
+        console.log('📷 Mensaje con imagen detectado, descargando media...');
+        const media = await msg.downloadMedia();
+        const buffer = Buffer.from(media.data, 'base64');
 
-  // ===== Caso: mensaje con imagen =====
-  if (msg.hasMedia && !msg.from === 'status@broadcast') {
-    try {
-      const media = await msg.downloadMedia();
-      const buffer = Buffer.from(media.data, 'base64');
+        const numeros = await leerNumeros(buffer);
 
-      const numeros = await leerNumeros(buffer);
+        if (!numeros) {
+          return msg.reply('🚨 No detecté números en la imagen');
+        }
 
-      if (!numeros) {
-        return msg.reply('🚨 No detecté números en la imagen');
+        estados.set(msg.from, {
+          esperandoConfirmacion: true,
+          numeros,
+          buffer,
+        });
+        console.log(`ℹ️  Números detectados: ${numeros.join(', ')}`);
+        return msg.reply(
+          `ℹ️ Números detectados: ${numeros.join(', ')}\n\n❔¿Están correctos? S/N`,
+        );
+      } catch (err) {
+        console.log('❌ Error leyendo la imagen');
+        console.error(err);
+        msg.reply('❌ Error leyendo la imagen');
       }
-
-      estados.set(msg.from, {
-        esperandoConfirmacion: true,
-        numeros,
-        buffer,
-      });
-      console.log(`ℹ️ Números detectados: ${numeros.join(', ')}`);
-      return msg.reply(
-        `ℹ️ Números detectados: ${numeros.join(', ')}\n\n❔¿Están correctos? S/N`,
-      );
-    } catch (err) {
-      console.log('❌ Error leyendo la imagen');
-      console.error(err);
-      msg.reply('❌ Error leyendo la imagen');
     }
-  }
-});
+  });
+}
 
-client.initialize();
+function startClient() {
+  try {
+    if (client) {
+      console.log('Cliente ya existe, ignorando start');
+      return;
+    }
+
+    client = createClientInstance();
+    attachClientHandlers(client);
+  } catch (err) {
+    console.error('Error en startClient:', err);
+    return;
+  }
+  // Inicializa el cliente y establece un timer que reiniciará si no llega 'ready'
+  try {
+    client.initialize();
+  } catch (err) {
+    console.error('Error al inicializar client:', err);
+    safeDestroyClient().then(() => scheduleRestart('initialize_error'));
+    return;
+  }
+
+  clearReadyTimer();
+  readyTimer = setTimeout(() => {
+    if (!client) return;
+    console.error(
+      `⏱️  No llegó 'ready' en ${READY_TIMEOUT_MS}ms — reiniciando cliente.`,
+    );
+    safeDestroyClient().then(() => scheduleRestart('ready_timeout'));
+  }, READY_TIMEOUT_MS);
+}
+
+// Si ya existe alguna implementación de handler de mensaje grande en el archivo, la renombramos
+// Copia la gran función inline de `client.on('message', ...)` a `handleIncomingMessage` más abajo en el archivo.
+
+startClient();
+
+// Manejo de cierre del proceso
+process.on('SIGINT', async () => {
+  console.log('Deteniendo servidor...');
+  await safeDestroyClient();
+  process.exit(0);
+});
 
 // ==== Rutas de API Express
 /**

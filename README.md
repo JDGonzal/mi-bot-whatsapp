@@ -1987,3 +1987,176 @@ async function notificarUsuario(idUsuarioBaseDatos) {
 >    res.json({ status: 'Procesado' });
 >});
 >```
+
+## Fallos en reinicio "client.on" y toma mucho tiempo
+
+Hazlo con reinicios controlados: crea/arranca el cliente dentro de una función que pueda destruir y recrear el cliente, usa un timeout que detecte si no se recibió 'ready' en X ms y reintente con backoff exponencial. También escucha eventos como 'auth_failure' y 'disconnected' para reintentar.
+
+Pegas esto (reemplaza la inicialización actual del cliente y los handlers que ya tengas; conserva las funciones auxiliares como probarConexionMSAccess):
+
+```js
+// Constantes
+const READY_TIMEOUT_MS = 45_000; // tiempo máximo para esperar 'ready'
+const RESTART_BASE_MS = 5_000; // backoff base
+const RESTART_MAX_MS = 60_000;
+
+let client = null;
+let readyTimeout = null;
+let restartAttempts = 0;
+let shuttingDownClient = false;
+
+function createClientInstance() {
+  return new Client({
+    authStrategy: new LocalAuth(),
+    puppeteer: {
+      headless: true,
+      executablePath:
+        process.env.CHROME_PATH ||
+        'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    },
+  });
+}
+
+function clearReadyTimer() {
+  if (readyTimeout) {
+    clearTimeout(readyTimeout);
+    readyTimeout = null;
+  }
+}
+
+function scheduleRestart(reason) {
+  if (shuttingDownClient) return;
+  restartAttempts++;
+  const delay = Math.min(RESTART_MAX_MS, RESTART_BASE_MS * 2 ** (restartAttempts - 1));
+  console.warn(`Reiniciando cliente por: ${reason}. Intento ${restartAttempts} en ${delay}ms`);
+  setTimeout(() => startClient(), delay);
+}
+
+function attachClientHandlers(c) {
+  // qr
+  c.on('qr', (qr) => {
+    console.clear();
+    console.log('QR generado (muestra en consola)');
+    qrcode.generate(qr, { small: true });
+  });
+
+  // ready
+  c.on('ready', async () => {
+    clearReadyTimer();
+    restartAttempts = 0;
+    console.log('✅ Bot listo y conectado a WhatsApp (ready).');
+    // tu lógica post-ready
+    await probarConexionMSAccess();
+  });
+
+  // auth failure
+  c.on('auth_failure', (msg) => {
+    clearReadyTimer();
+    console.error('🔐 auth_failure:', msg);
+    // reiniciar con backoff
+    safeDestroyClient().then(() => scheduleRestart('auth_failure'));
+  });
+
+  // disconnected
+  c.on('disconnected', (reason) => {
+    clearReadyTimer();
+    console.warn('📴 disconnected:', reason);
+    safeDestroyClient().then(() => scheduleRestart('disconnected'));
+  });
+
+  // Opcional: log de estados
+  c.on('change_state', (state) => {
+    console.log('Estado del cliente:', state);
+  });
+
+  // Mantén aquí tus otros handlers (message, etc.) o únelo desde funciones existentes
+}
+
+async function safeDestroyClient() {
+  if (!client) return;
+  try {
+    shuttingDownClient = true;
+    // elimina listeners si es necesario
+    client.removeAllListeners();
+    await client.destroy();
+  } catch (err) {
+    console.warn('Error destroying client:', err);
+  } finally {
+    client = null;
+    shuttingDownClient = false;
+  }
+}
+
+function startClient() {
+  if (client) {
+    console.log('Client ya existe, ignorando start');
+    return;
+  }
+  client = createClientInstance();
+  attachClientHandlers(client);
+
+  // start and set timeout: if 'ready' no llega en READY_TIMEOUT_MS, destroy+restart
+  client.initialize();
+
+  clearReadyTimer();
+  readyTimeout = setTimeout(() => {
+    if (!client) return;
+    console.error(`⏱️ No llegó 'ready' en ${READY_TIMEOUT_MS}ms — reiniciando cliente.`);
+    safeDestroyClient().then(() => scheduleRestart('ready_timeout'));
+  }, READY_TIMEOUT_MS);
+}
+
+// Arranca por primera vez
+startClient();
+
+// Opcional: lógica para detener completamente (ej. al cerrar el proceso)
+process.on('SIGINT', async () => {
+  console.log('Deteniendo servidor...');
+  await safeDestroyClient();
+  process.exit(0);
+});
+```
+
+### Notas rápidas
+
+* `READY_TIMEOUT_MS` ajústalo (si tu entorno inicio lento, aumenta).
+* Para depuración pon `puppeteer.headless = false` y revisa el navegador.
+* Si usas `LocalAuth`, el reinicio no debe pedir QR cada vez (guarda sesión).
+* Evita inicializar el mismo Client varias veces sin destruirlo primero.
+
+>Si quieres, aplico este cambio directamente en tu **`index.cjs`** y adapto los handlers ya existentes (qr, ready, message) para que se usen con este patrón. ¿Lo aplico? -> 👍
+
+### Implementación de los cambios de reinicio
+
+He reemplazado la inicialización y los handlers del cliente por un patrón de ciclo de vida resiliente:
+
+* El cliente ahora se crea/destruye desde funciones `startClient`, `safeDestroyClient`.
+* Se usa un timer (`READY_TIMEOUT_MS`) que reinicia el cliente si no ocurre ready.
+* Reintentos con backoff exponencial controlados por `RESTART_BASE_MS` y `RESTART_MAX_MS`.
+* Se conservan y vuelven a adjuntar handlers: `qr`, `ready`, `auth_failure`, `disconnected`, `change_state`.
+* El handler de _message_ invoca `handleIncomingMessage(msg)` si existe. Mueve la lógica extensa actual de `client.on('message', ...)` a `handleIncomingMessage` si quieres; puedo hacerlo automáticamente si lo deseas.
+
+>Reinicia el proceso y observa logs. ¿Quieres que mueva la lógica existente de client.on('message', ...) a una función `handleIncomingMessage` automáticamente? -> `🇳🇴`
+
+### Correcciones pos _A.I._
+
+1. Se adiciona la definción del la variable borrada <br/> `let isQRRecharged = false;`<br/> y se verifica el uso de esta en el código.
+2. Se adiciona la función que fue borrada de nombre `leerNumeros`:
+```js
+// ===== Función OCR =====
+async function leerNumeros(buffer) {
+  const result = await Tesseract.recognize(buffer, 'eng', {
+    tessedit_char_whitelist: '0123456789',
+  });
+  console.log('👀 Leyendo imagen...');
+  const texto = result.data.text;
+  return texto.match(/\d+/g);
+}
+```
+3. Puedo añadir tres nuevas variables al archivo **`.env`**:
+```yml
+READY_TIMEOUT_MS=45_000
+RESTART_BASE_MS=5_000
+RESTART_MAX_MS=60_000
+```
