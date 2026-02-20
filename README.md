@@ -1988,11 +1988,11 @@ async function notificarUsuario(idUsuarioBaseDatos) {
 >});
 >```
 
-## Fallos en reinicio "client.on" y toma mucho tiempo
+## Fallos en reinicio `client.on` y que toma mucho tiempo
 
-Hazlo con reinicios controlados: crea/arranca el cliente dentro de una función que pueda destruir y recrear el cliente, usa un timeout que detecte si no se recibió 'ready' en X ms y reintente con backoff exponencial. También escucha eventos como 'auth_failure' y 'disconnected' para reintentar.
+Hazlo con reinicios controlados: crea/arranca el cliente dentro de una función que pueda destruir y recrear el cliente, usa un _timeout_ que detecte si no se recibió `'ready'` en X ms y reintente con _backoff_ exponencial. También escucha eventos como `'auth_failure'` y `'disconnected'` para reintentar.
 
-Pegas esto (reemplaza la inicialización actual del cliente y los handlers que ya tengas; conserva las funciones auxiliares como probarConexionMSAccess):
+Pegas esto (reemplaza la inicialización actual del cliente y los handlers que ya tengas; conserva las funciones auxiliares como `probarConexionMSAccess`):
 
 ```js
 // Constantes
@@ -2067,7 +2067,7 @@ function attachClientHandlers(c) {
 
   // Opcional: log de estados
   c.on('change_state', (state) => {
-    console.log('Estado del cliente:', state);
+    console.log('📊 Estado del cliente de WhatsApp:', state);
   });
 
   // Mantén aquí tus otros handlers (message, etc.) o únelo desde funciones existentes
@@ -2118,7 +2118,7 @@ process.on('SIGINT', async () => {
 });
 ```
 
-### Notas rápidas
+### 📓 Notas rápidas
 
 * `READY_TIMEOUT_MS` ajústalo (si tu entorno inicio lento, aumenta).
 * Para depuración pon `puppeteer.headless = false` y revisa el navegador.
@@ -2127,7 +2127,7 @@ process.on('SIGINT', async () => {
 
 >Si quieres, aplico este cambio directamente en tu **`index.cjs`** y adapto los handlers ya existentes (qr, ready, message) para que se usen con este patrón. ¿Lo aplico? -> 👍
 
-### Implementación de los cambios de reinicio
+### 👷‍♂️ Implementación de los cambios de reinicio
 
 He reemplazado la inicialización y los handlers del cliente por un patrón de ciclo de vida resiliente:
 
@@ -2139,7 +2139,7 @@ He reemplazado la inicialización y los handlers del cliente por un patrón de c
 
 >Reinicia el proceso y observa logs. ¿Quieres que mueva la lógica existente de client.on('message', ...) a una función `handleIncomingMessage` automáticamente? -> `🇳🇴`
 
-### Correcciones pos _A.I._
+### 🤖 Correcciones pos _A.I._
 
 1. Se adiciona la definción del la variable borrada <br/> `let isQRRecharged = false;`<br/> y se verifica el uso de esta en el código.
 2. Se adiciona la función que fue borrada de nombre `leerNumeros`:
@@ -2160,3 +2160,90 @@ READY_TIMEOUT_MS=45_000
 RESTART_BASE_MS=5_000
 RESTART_MAX_MS=60_000
 ```
+
+## Cerrando la conexión a MSAccess y mas validaciones
+
+1. `node-adodb` no expone siempre un método close() explícito. Para manejarlo de forma segura cambia la declaración de la conexión a let (para permitir reasignarla):
+```js
+-const connection = ADODB.open(
++let connection = ADODB.open(
+// ...existing code...
+  `Provider=Microsoft.ACE.OLEDB.16.0;Data Source=${ADODB_DATA_SOURCE};Persist Security Info=False;`,
+);
+```
+2. Implementa una función que intente llamara `connection.close()` si existe y, si no, elimine la referencia para que el GC libere recursos.
+```js
+// Añadir función para cerrar / liberar la conexión MSAccess
+async function closeMSAccessConnection() {
+  try {
+    if (connection && typeof connection.close === 'function') {
+      await connection.close();
+      console.log('✅ Conexión MSAccess cerrada (connection.close()).');
+    } else {
+      // node-adodb típicamente no expone close(); eliminamos referencia y esperamos un poco
+      console.log('ℹ️ connection.close() no disponible — eliminando referencia para permitir GC.');
+      connection = null;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  } catch (err) {
+    console.warn('⚠️ Error intentando cerrar conexión MSAccess:', err);
+    try { connection = null; } catch (e) {}
+  }
+}
+```
+3. Llama esa función en el SIGINT antes de salir:
+```js
+process.on('SIGINT', async () => {
+  console.log('🔚 Deteniendo servidor de WhatsApp...');
+  await safeDestroyClient();
+  // TODO: Cerrar la conexión de MSAccess
++ await closeMSAccessConnection();
+  
+  process.exit(0);
+});
+```
+4. Finalmente en el método `safeDestroyClient()`, puse este código  <br/> `connection = null;` <br/> Y borré la nueva función `closeMSAccessConnection()`:
+```js
+process.on('SIGINT', async () => {
+  console.log('🔚 Deteniendo servidor...');
+  connection = null; // Liberamos la conexión a la base de datos por seguridad
+  await safeDestroyClient();
+  process.exit(0);
+});
+```
+5. Agrego la función `consoleLog()`, para tener un solo sitio con formato para mostrar los procesos en la `TERMINAL`, y cambio todos los otros `console.`:
+```js
+function consoleLog(type, ...args) {
+  const timestamp = new Date().toLocaleTimeString();
+  const prefix =
+    {
+      info: 'ℹ️',
+      warn: '⚠️',
+      error: '❌',
+    }[type] || type;
+  console.log(`${prefix} [${timestamp}]`, ...args);
+}
+```
+6. Otro ajuste hecho es cuando recibe un `´n´` para validar números limpia el estado:
+```js
+      if (respuesta === 'n' || respuesta === 'no') {
+        consoleLog(
+          'warn',
+          `Usuario '${estado.username}' indicó que los números no son correctos, estado reiniciado.`,
+        );
+        estados.delete(msg.from);
+        return msg.reply(
+          '💡 *Sugerencia*:\n1️⃣ Mejora la imagen y envía de nuevo.\n2️⃣ O digita la lista de números separados por comas.',
+        );
+      }
+```
+
+### Notas rápidas:
+
+* Cambia const connection → let connection para poder reasignar a null.
+* Si tu versión de node-adodb/COM expone close() se llamará; si no, dejar la referencia a null y dar un pequeño delay suele ser suficiente para liberar recursos.
+* Para asegurarlo más, evita queries pendientes antes de cerrar; espera a que terminen las operaciones críticas antes de forzar cierre.
+
+>[!NOTE]
+>
+>Adicional algunos controles con `try/catch`, para mejores controles y ponerle emoji a cada mensaje en la `TERMINAL`.
