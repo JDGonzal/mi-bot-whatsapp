@@ -2246,4 +2246,149 @@ function consoleLog(type, ...args) {
 
 >[!NOTE]
 >
->Adicional algunos controles con `try/catch`, para mejores controles y ponerle emoji a cada mensaje en la `TERMINAL`.
+>Adicional algunos manejos con `try/catch`, para mejores controles y adicionar un emoji a cada mensaje en la `TERMINAL`.
+
+## Guardando los logs en archivos y controlando errores
+
+### Creando el archivo de logs y el guardando
+
+1. Importo las bibliotecas necesarias:
+```js
+const fs = require('fs');
+const path = require('path');
+```
+2. Función para poner el nombre a usar:
+```js
+function nowFilenameTs(d = new Date()) {
+  const unixTimestamp = Math.floor(d);
+  return `z${unixTimestamp}`;
+}
+```
+3. Con el nombre creo el achivo:
+```js
+const logFileName = `${nowFilenameTs()}.log`;
+const logFilePath = path.join(__dirname, logFileName);
+try {
+  // crea el archivo vacío (si ya existe, se sobrescribe con contenido vacío)
+  fs.writeFileSync(logFilePath, '', { flag: 'w' });
+} catch (e) {
+  console.error('No se pudo crear archivo de log:', e);
+}
+```
+4. Ahora bien desde la función `consoleLog()`, organizo el parámetro `...args`, para terlo en una linea y luego lo grabo en el archivo:
+```js
+  try {
+    const serialize = args
+      .map((a) => {
+        if (typeof a === 'string') return a;
+        try {
+          return JSON.stringify(a);
+        } catch {
+          return String(a);
+        }
+      })
+      .join(' ');
+    const line = `${prefix} [${timestamp}] ${serialize}\n`;
+    fs.appendFile(logFilePath, line, (err) => {
+      if (err) {
+        // no interrumpe la ejecución por fallo de escritura
+        console.error('Error escribiendo log en archivo:', err);
+      }
+    });
+  } catch (e) {
+    // ignore
+  }
+```
+
+### Instancias de WhastApps
+
+1. En la función `createClientInstance()`. afgrega un manejador de instancias:
+```js
+function createClientInstance(idSuffix) {
+  try {
+    // Si se proporciona idSuffix, se usará para crear un perfil de sesión separado, útil para múltiples instancias en la misma máquina
+    const authOptions = idSuffix
+      ? new LocalAuth({ clientId: `session_${idSuffix}` })
+      : new LocalAuth();
+    return new Client({
+      authStrategy: authOptions,
+      ...
+    });
+  } catch (err) {
+    ...
+  }
+}
+```
+2. Esto se llama desde la función `startClien()`
+
+### Validación de las imágenes:
+
+1. Valido si las imágenes o media son válidos:
+```js
+    const isValidMedia =
+      msg.hasMedia && msg?.type === 'image' && msg.from !== 'status@broadcast';
+```
+2. Si ha datos traídos de la BD, aprovecho la variable `isValidMedia`:
+```js
+if (data) {
+      if (
+        (numeros || isValidMedia) &&
+        !(await estado?.esperandoCelular) &&
+        !(await estado?.esperandoConfirmacion)
+      ) {
+        consoleLog(
+          'phone',
+          `Celular número: '${data[0]?.CELLPHONE}' de "${data[0]?.USER_NAME}"`,
+        );
+        estados.set(msg.from, {
+          esperandoConfirmacion: true,
+          numeros,
+          texto,
+          cellphone: data[0]?.CELLPHONE,
+          username: data[0]?.USER_NAME || 'Desconocido',
+          unixTimestamp: Math.floor(Date.now()),
+        });
+        if (numeros) {
+          consoleLog('number', `Números detectados: ${numeros.join(', ')}`);
+          return msg.reply(
+            `#️⃣  Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
+          );
+        }
+      }
+    }
+```
+3. Cuando detecto la imagen, complemento el valor en `estados`, con lo que tenga mas el `buffer` de la imagen:
+```js
+    if (isValidMedia) {
+      try {
+        consoleLog(
+          'photo',
+          'Mensaje con imagen detectado, descargando media...',
+        );
+        const media = await msg.downloadMedia();
+        const buffer = Buffer.from(media.data, 'base64');
+
+        const numeros = await leerNumeros(buffer);
+
+        if (!numeros) {
+          consoleLog('warn', 'No detecté números en la imagen');
+          return msg.reply('🚨 No detecté números en la imagen');
+        }
+        const current = estados.get(msg.from) || estado;
+        estados.set(msg.from, {
+          ...current,
+          esperandoConfirmacion: true,
+          numeros,
+          buffer,
+        });
+        consoleLog('number', `Números detectados: ${numeros.join(', ')}`);
+        return msg.reply(
+          `#️⃣  Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
+        );
+      } catch (err) {
+        consoleLog('error', 'Error leyendo la imagen');
+        consoleLog('error', err);
+        msg.reply('❌ Error leyendo la imagen');
+      }
+    }
+```

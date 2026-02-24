@@ -6,6 +6,8 @@ const dotenv = require('dotenv');
 dotenv.config();
 const ADODB = require('node-adodb');
 ADODB.debug = true;
+const fs = require('fs');
+const path = require('path');
 
 // ==== Definición del servicio API con express =====
 const app = express();
@@ -18,9 +20,25 @@ const estados = new Map();
 let isQRRecharged = false;
 let client = null; // el cliente será creado por startClient(), no al cargar el módulo
 
+// Crear archivo de log al iniciar: YYYYMMddHHmmss.log en la carpeta del script
+function nowFilenameTs(d = new Date()) {
+  const unixTimestamp = Math.floor(d);
+  return `z${unixTimestamp}`;
+}
+const logFileName = `${nowFilenameTs()}.log`;
+const logFilePath = path.join(__dirname, logFileName);
+try {
+  // crea el archivo vacío (si ya existe, se sobrescribe con contenido vacío)
+  fs.writeFileSync(logFilePath, '', { flag: 'w' });
+} catch (e) {
+  console.error('No se pudo crear archivo de log:', e);
+}
+
 // ==== Formato de mensajes en pantalla =====
 function consoleLog(type, ...args) {
-  const timestamp = new Date().toLocaleTimeString();
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   const prefix =
     {
       info: 'ℹ️ ',
@@ -42,8 +60,31 @@ function consoleLog(type, ...args) {
       chart: '📊',
       qr: '🔳',
       access: '🅰️ ',
+      number: '#️⃣ ',
     }[type] || type;
   console.log(`${prefix} [${timestamp}]`, ...args);
+  // También guardar una línea en el archivo de log creado al iniciar
+  try {
+    const serialize = args
+      .map((a) => {
+        if (typeof a === 'string') return a;
+        try {
+          return JSON.stringify(a);
+        } catch {
+          return String(a);
+        }
+      })
+      .join(' ');
+    const line = `${prefix} [${timestamp}] ${serialize}\n`;
+    fs.appendFile(logFilePath, line, (err) => {
+      if (err) {
+        // no interrumpe la ejecución por fallo de escritura
+        console.error('Error escribiendo log en archivo:', err);
+      }
+    });
+  } catch (e) {
+    // ignore
+  }
 }
 
 // ====== Enviar Mensajes directos =====
@@ -263,8 +304,7 @@ async function guardarRegistrosEnBaseDeDatos(from) {
     consoleLog('2️⃣ ', 'sql:', insertQuery);
 
     try {
-      const data = await connection.query(insertQuery);
-      consoleLog('3️⃣ ', 'MSAccess OK:', data);
+      await connection.query(insertQuery);
     } catch (err) {
       const msg = err?.process?.message ?? String(err);
 
@@ -274,9 +314,9 @@ async function guardarRegistrosEnBaseDeDatos(from) {
         const current = estados.get(from) || estado;
         const updatedNumeros = (current.numeros || []).filter((n) => n !== num);
         estados.set(from, { ...current, numeros: updatedNumeros });
-        consoleLog('4️⃣ ', 'Duplicado detectado, eliminado del estado:', num);
+        consoleLog('3️⃣ ', 'Duplicado detectado, eliminado del estado:', num);
         consoleLog(
-          '5️⃣ ',
+          '4️⃣ ',
           'Números actuales (post-eliminación):',
           updatedNumeros.join(', '),
         );
@@ -302,10 +342,14 @@ let readyTimer = null;
 let restartAttempts = 0;
 let shuttingDownClient = false;
 
-function createClientInstance() {
+function createClientInstance(idSuffix) {
   try {
+    // Si se proporciona idSuffix, se usará para crear un perfil de sesión separado, útil para múltiples instancias en la misma máquina
+    const authOptions = idSuffix
+      ? new LocalAuth({ clientId: `session_${idSuffix}` })
+      : new LocalAuth();
     return new Client({
-      authStrategy: new LocalAuth(),
+      authStrategy: authOptions,
       puppeteer: {
         headless: true,
         executablePath:
@@ -316,11 +360,13 @@ function createClientInstance() {
     });
   } catch (err) {
     consoleLog('error', 'Error creando instancia de Client:', err);
+    throw err;
   }
 }
 
 function clearReadyTimer() {
   if (readyTimer) {
+    consoleLog('info', 'Limpiando timer de ready');
     clearTimeout(readyTimer);
     readyTimer = null;
   }
@@ -328,6 +374,7 @@ function clearReadyTimer() {
 
 function scheduleRestart(reason) {
   try {
+    consoleLog('retry', `scheduleRestart llamado por: "${reason}"`);
     if (shuttingDownClient) return;
     restartAttempts++;
     const delay = Math.min(
@@ -422,19 +469,22 @@ function attachClientHandlers(c) {
   c.on('message', async (msg) => {
     consoleLog(
       'recive',
-      `Mensaje recibido de '${msg.from}': "${msg.body || msg.caption || '[media]'}" (hasMedia: ${msg.hasMedia})`,
+      `{"origen":"${msg?.author || msg.from}", "contenido":"${msg.body || msg.caption || '[media]'}", "hasMedia":${msg.hasMedia} ${msg.type ? `, "tipo":"${msg.type}"` : ''}}`,
     );
+
+    if (msg.from === 'status@broadcast') return;
     const texto = msg.body;
     const numeros = texto.match(/\d+/g);
     const estado = estados.get(msg.from);
     const data = await VerificarCelularEnBaseDeDatos(msg.from);
+    const isValidMedia =
+      msg.hasMedia && msg?.type === 'image' && msg.from !== 'status@broadcast';
 
     if (data) {
       if (
-        numeros &&
-        !estado?.esperandoCelular &&
-        !estado?.esperandoConfirmacion &&
-        !msg.from !== 'status@broadcast'
+        (numeros || isValidMedia) &&
+        !(await estado?.esperandoCelular) &&
+        !(await estado?.esperandoConfirmacion)
       ) {
         consoleLog(
           'phone',
@@ -448,17 +498,18 @@ function attachClientHandlers(c) {
           username: data[0]?.USER_NAME || 'Desconocido',
           unixTimestamp: Math.floor(Date.now()),
         });
-        consoleLog('#️⃣ ', `Números detectados: ${numeros.join(', ')}`);
-        return msg.reply(
-          `#️⃣  Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
-        );
+        if (numeros) {
+          consoleLog('number', `Números detectados: ${numeros.join(', ')}`);
+          return msg.reply(
+            `#️⃣  Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
+          );
+        }
       }
     }
 
     if (
-      !estado?.esperandoCelular &&
-      !estado?.esperandoConfirmacion &&
-      msg.from !== 'status@broadcast'
+      !(await estado?.esperandoCelular) &&
+      !(await estado?.esperandoConfirmacion)
     ) {
       // Verificamos primer si existe el número celular
       if (!data || data[0]?.Found === 0) {
@@ -490,7 +541,10 @@ function attachClientHandlers(c) {
       ) {
         if (await guardarRegistrosEnBaseDeDatos(msg.from)) {
           const data = await VerificarRegistrosEnBaseDeDatos(msg.from);
-          const numerosGuardados = data.map((item) => item?.BONO);
+          let numerosGuardados = [];
+          if (data && data.length > 0) {
+            numerosGuardados = data.map((item) => item?.BONO);
+          }
           consoleLog(
             'save',
             `Confirmado. Guardado de '${estado.cellphone}' los números: ${numerosGuardados.join(', ')}`,
@@ -500,6 +554,20 @@ function attachClientHandlers(c) {
           );
           estados.delete(msg.from);
           return true;
+        } else {
+          consoleLog(
+            'error',
+            'Error guardando números en la base de datos para:',
+            {
+              from: msg.from,
+              username: estado.username,
+            },
+          );
+          await msg.reply(
+            '❌ Error guardando los números en la base de datos. Intenta de nuevo más tarde.',
+          );
+          estados.delete(msg.from);
+          return false;
         }
       }
       if (respuesta === 'n' || respuesta === 'no') {
@@ -556,26 +624,31 @@ function attachClientHandlers(c) {
     }
 
     // ===== Caso: mensaje con imagen =====
-    if (msg.hasMedia && msg.from !== 'status@broadcast') {
+    if (isValidMedia) {
       try {
-        consoleLog('photo', 'Mensaje con imagen detectado, descargando media...');
+        consoleLog(
+          'photo',
+          'Mensaje con imagen detectado, descargando media...',
+        );
         const media = await msg.downloadMedia();
         const buffer = Buffer.from(media.data, 'base64');
 
         const numeros = await leerNumeros(buffer);
 
         if (!numeros) {
+          consoleLog('warn', 'No detecté números en la imagen');
           return msg.reply('🚨 No detecté números en la imagen');
         }
-
+        const current = estados.get(msg.from) || estado;
         estados.set(msg.from, {
+          ...current,
           esperandoConfirmacion: true,
           numeros,
           buffer,
         });
-        consoleLog('info', `Números detectados: ${numeros.join(', ')}`);
+        consoleLog('number', `Números detectados: ${numeros.join(', ')}`);
         return msg.reply(
-          `ℹ️ Números detectados: ${numeros.join(', ')}\n\n❔¿Están correctos? S/N`,
+          `#️⃣  Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
         );
       } catch (err) {
         consoleLog('error', 'Error leyendo la imagen');
