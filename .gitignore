@@ -157,3 +157,5 @@ dist-ssr
 
 # Datos de entrenamiento del OCR
 eng.traineddata
+*.RES
+*.jsc

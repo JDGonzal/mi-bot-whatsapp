@@ -119,15 +119,7 @@ let connection = ADODB.open(
 
 // ===== Función para crear la tabla "celulares" =====
 async function crearTablaCelulares() {
-  const createTableQuery = `
-CREATE TABLE CELULARES (
-    ID AUTOINCREMENT PRIMARY KEY,
-    MESSAGE_FROM VARCHAR(32) NOT NULL,
-    USER_NAME VARCHAR(64) NOT NULL,
-    CELLPHONE DOUBLE UNIQUE NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP 
-);`;
+  const createTableQuery = process.env.CREATE_TABLE_CELULARES;
 
   await connection
     .query(createTableQuery)
@@ -146,15 +138,7 @@ CREATE TABLE CELULARES (
 
 // ===== Función para crear la tabla "celulares" =====
 async function crearTablaRegistros() {
-  const createTableQuery = `
-CREATE TABLE REGISTROS (
-    IDUNIX VARCHAR(15) NOT NULL,
-    CELLPHONE DOUBLE NOT NULL,
-    BONO INT NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP,
-    CONSTRAINT PK_REGISTROS PRIMARY KEY (CELLPHONE, BONO)
-);`;
+  const createTableQuery = process.env.CREATE_TABLE_REGISTROS;
 
   await connection
     .query(createTableQuery)

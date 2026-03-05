@@ -1,52 +1,35 @@
 {
-  "name": "mi-bot-whatsapp",
+  "name": "wabotjs",
   "private": true,
-  "version": "1.0.0",
-  "description": "Necesitas tener instalado Node.js en tu computadora. Crea una carpeta para tu proyecto y ejecuta lo siguiente en tu terminal para iniciar el proyecto e instalar las librerías necesarias:",
+  "version": "2026.03.02",
   "main": "index.cjs",
   "type": "module",
   "scripts": {
     "start": "node --watch index.cjs",
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build:ofuscate": "npx javascript-obfuscator index.cjs --output app.cjs --compact true --control-flow-flattening true --numbers-to-expressions true --string-array true",
+    "ofuscate": "node --watch app.cjs",
+    "build:bytenode": "npx bytenode --compile app.cjs",
+    "compiled": "node --watch main.cjs",
     "lint": "eslint .",
-    "preview": "vite preview"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/JDGonzal/mi-bot-whatsapp.git"
+    "lint:fix": "eslint . --fix"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "bugs": {
-    "url": "https://github.com/JDGonzal/mi-bot-whatsapp/issues"
-  },
-  "homepage": "https://github.com/JDGonzal/mi-bot-whatsapp#readme",
   "dependencies": {
+    "bytenode": "1.5.7",
     "dotenv": "17.3.1",
     "express": "5.2.1",
     "node-adodb": "5.0.3",
     "qrcode-terminal": "0.12.0",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "socket.io": "4.8.3",
-    "socket.io-client": "4.8.3",
     "tesseract.js": "7.0.0",
     "whatsapp-web.js": "1.34.6"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
     "@types/node": "^24.10.1",
-    "@types/react": "^19.2.5",
-    "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
     "eslint": "^9.39.1",
-    "eslint-plugin-react-hooks": "^7.0.1",
-    "eslint-plugin-react-refresh": "^0.4.24",
-    "globals": "^16.5.0",
     "typescript": "~5.9.3",
-    "typescript-eslint": "^8.46.4",
-    "vite": "^7.2.4"
+    "typescript-eslint": "^8.46.4"
   }
 }

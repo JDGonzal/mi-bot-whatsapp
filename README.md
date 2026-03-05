@@ -2392,3 +2392,183 @@ if (data) {
       }
     }
 ```
+
+## Depurando el archivo package.json
+
+### Removiendo librerías innecesarias
+
+1. Ejecutar estos comando para eliminar librerias no necesarias de las dependencias:
+```dos
+pnpm remove react
+pnpm remove react-dom
+pnpm remove socket.io
+pnpm remove socket.io-client
+```
+2. Ejecutar estos comandos para eliminar bibliotecas no necesarias de las dependencias de desarrollo:
+```dos
+pnpm remove @types/react
+pnpm remove @types/react-dom
+pnpm remove @vitejs/plugin-react
+pnpm remove eslint-plugin-react-hooks
+pnpm remove eslint-plugin-react-refresh
+pnpm remove vite
+```
+3. Removemos del **`package.json`** la línea de `"homepage"`
+4. Removemos del **`package.json`** lo relacionado con `"bugs"`.
+5. Cambio la Licencia a `"MIT"`.
+6. Borro la información del `"repository"`.
+7. Borro la `"description"`
+8. La `"version"`, la pongo en `"2026.02.03"`.
+9. El `"name"`, por `"wabotjs"`
+10. Quitamos todlos los _carrts_ (`^`).
+
+## Encriptando el **`index.cjs`**
+
+Sí, es posible ejecutar un archivo index.js sin que el código fuente sea legible (ofuscado o convertido a un formato no editable), aunque Node.js por defecto no "desencripta" archivos .js estándar al vuelo para ejecutarlos.
+Para lograr esto, las soluciones más comunes no son "encriptación" tradicional (que requeriría una clave cada vez), sino **compilación a bytecode o empaquetado en binarios**:
+
+### 1. Compilación a Bytecode (Recomendado para protección de IP)
+
+Puedes convertir tu código JavaScript en un archivo de extensión .jsc. Este archivo contiene **bytecode de V8** (el motor de Node.js), que es un formato binario que Node puede ejecutar pero los humanos no pueden leer ni editar fácilmente.
+* **Herramienta**: [Bytenode](https://github.com/bytenode/bytenode
+) es la librería estándar para esto.
+* **Proceso**:
+1. Instalas la herramienta:<br/> `npm install -g bytenode`
+2. Compilas tu archivo:<br/> `bytenode --compile index.cjs` (esto genera un index.jsc).
+3. Para ejecutarlo, creas un cargador pequeño (**`main.js`**) que simplemente diga:
+```javascript
+require('bytenode');
+require('./index.jsc');
+```
+4. Si tenemos el código ofuscado como se indica en [pasos para ofuscar el código](#pasos-para-ofuscar-el-código-desde-una-terminal), mas bien compilamos el archivo resultante **`app.cjs`**:<br/> `bytenode --compile app.cjs`
+5. y creamos el **`main.js`**, así:
+```javascript
+require('bytenode');
+require('./app.jsc');
+```
+
+### 2. Crear un Ejecutable Único (.exe o binario)
+
+En lugar de distribuir archivos .js, puedes empaquetar todo tu proyecto (incluyendo Node.js y tus dependencias) en un solo archivo ejecutable donde el código fuente queda oculto dentro del binario.
+
+* **Opciones modernas:**
+
+  * **SEA (Single Executable Applications)**: Es la funcionalidad nativa de Node.js (desde la versión 20+) para inyectar un script en un ejecutable de Node.
+  * **pkg**: Una herramienta muy popular de Vercel que convierte tu proyecto en un archivo .exe (Windows), Linux o macOS.
+
+### 3. Ofuscación de Código
+
+Si no necesitas ocultar el archivo al 100% pero quieres que sea imposible de entender si alguien lo abre, puedes usar un **ofuscador**. Esto transforma tu código legible en algo caótico y difícil de seguir.
+* **Herramienta**: javascript-obfuscator es la más robusta para Node.js.
+**Comparativa rápida**
+
+|Método|Nivel de Seguridad|¿Requiere Node.js instalado|
+|--|--|--|
+|Bytenode (.jsc)|Alto (Bytecode)|Sí|
+|pkg / SEA (.exe)|Muy Alto (Binario)|No (incluye Node)|
+|Ofuscación|Medio (Solo confunde)|Sí|
+
+Para ofuscar tu archivo **``index.cjs``**, la herramienta estándar y más potente es `javascript-obfuscator`. Esta herramienta transforma tu código legible en algo extremadamente difícil de entender sin alterar su funcionamiento.
+
+#### Pasos para ofuscar el código desde una `TERMINAL`:
+
+1. **Instalación**<br/> Primero, instala el paquete de forma global o local en tu proyecto:<br/> `npm install -g javascript-obfuscator`
+2. **Ofuscación básica** <br/>
+Para generar una versión protegida de tu archivo **`index.cjs`** con el nombre **`index.js`**, ejecuta: <br/> `javascript-obfuscator index.cjs --output app.cjs`
+3. **Ofuscación avanzada (Recomendado)**<br/> Para una protección mayor que incluya la transformación del flujo de control y la codificación de cadenas de texto, usa estos parámetros: <br/>`javascript-obfuscator index.cjs --output app.js --compact true --control-flow-flattening true --numbers-to-expressions true --string-array true`
+4. **Opciones clave que puedes usar:**
+* `--compact true`: Elimina espacios y saltos de línea para que todo quede en una sola línea.
+* `--control-flow-flattening true`: Desestructura la lógica de tus bucles y condicionales, haciendo casi imposible seguir la ejecución manual.
+* `--self-defending true`: Hace que el código deje de funcionar si alguien intenta "embellecerlo" o formatearlo para leerlo.
+
+>[!WARNING]
+>
+>**Nota de seguridad:** <br/> Ten cuidado al usar ofuscadores web gratuitos desconocidos, ya que algunos podrían inyectar código malicioso en tu script. Prefiere siempre herramientas de código abierto instaladas vía NPM.
+
+>[!NOTE]
+>
+>La respuesta corta es: Se puede intentar, pero nunca volverá a ser el código original. [1, 2]
+>
+>Aquí el detalle de lo que ocurre en una "desofuscación":
+>
+>* Formateo (Beautify): Herramientas sencillas pueden devolver los saltos de línea y espacios, haciendo el código "leíble" pero no "entendible". [2]
+>* Pérdida de Nombres: Si el ofuscador cambió function CalcularSalario por function _0x4a2b, no hay forma de recuperar el nombre original. El desofuscador solo verá variables genéricas. [1, 2]
+>* Lógica Enredada: Técnicas como el Control Flow Flattening convierten un simple if/else en un complejo laberinto de switch y bucles. Revertir esto requiere ingeniería inversa manual muy avanzada y costosa. [1]
+>* Desofuscadores Automáticos: Existen herramientas como deobfuscator.io, que pueden resolver algunas capas de encriptación de strings, pero el código resultante sigue siendo un caos de variables sin sentido. [2]
+>* En resumen: Un archivo ofuscado es suficiente para proteger propiedad intelectual contra el 95% de las personas, pero un experto con mucho tiempo y herramientas de depuración podría eventualmente entender qué hace el código, aunque nunca recuperará tus comentarios ni nombres de variables originales. [1, 2]
+
+## 4. Compilar, Ejecutable u Ofuscar
+
+Para que el paso 1 funcione correctamente, tu **`main.js`** debe ser lo más minimalista posible, ya que su única función es servir de "llave" para arrancar el código binario.
+
+1. Contenido del **`main.js`** <br/> Solo necesitas estas dos líneas:
+```javascript
+require('bytenode'); // Carga el soporte para leer archivos .jsc
+require('./index.jsc'); // Ejecuta tu código encriptado/compilado
+```
+
+>[!IMPORTANT]
+>
+>**Importante:** Asegúrate de que el archivo index.jsc esté en la misma carpeta que el main.js. No necesitas incluir el index.js original; de hecho, ¡deberías borrarlo (o guardarlo en un lugar seguro) antes de distribuir tu app!
+
+2. Cómo se invoca (Ejecución) <br/>Tienes dos formas de lanzarlo desde la terminal:
+
+* Usando Node directamente: <br/>`node main.js`
+  
+* Usando npm (Recomendado):<br/>Si quieres usar npm start, edita tu archivo package.json y asegúrate de que el script apunte al cargador:
+```json
+  "scripts": 
+    "start": "node main.js"
+  },>
+  "dependencies": {
+    "bytenode": "1.5.7"
+  }
+}
+```
+* Luego, simplemente ejecutas:
+```bash
+npm start
+```
+
+>![!WARNING]
+>
+>**Un detalle crítico**
+>Para que esto funcione en otra computadora, debes asegurarte de haber instalado la dependencia localmente en la carpeta de tu proyecto:<br/>
+>`npm install bytenode`<br/>
+>Copias a la otra máquina: **`main.js`**, **`index.jsc`**, **`package.json`** y la carpeta **"node_modules"**.
+>
+
+## Límite de ejecución con MSDOS
+
+En Delphi 7 y la API de Windows, el límite de longitud para el comando depende de cómo se invoque:
+1. Límite de CreateProcess: El parámetro lpCommandLine (donde pones el comando) admite hasta 32,767 caracteres.
+2. Límite de `cmd.exe`: Aquí está el problema real. El intérprete de comandos de Windows (`cmd.exe`) tiene un límite máximo de `8,191` caracteres. Si tu variable Command sumada a `'cmd.exe /C '` supera este número, el comando fallará o se truncará.
+  
+### ¿Cómo manejar comandos extremadamente largos?
+
+Si necesitas superar los `8,191` caracteres (por ejemplo, enviando un script de Node.js incrustado muy extenso), tienes estas opciones:
+1. **Usar un archivo temporal (La más confiable)**<br/>
+En lugar de pasar todo el código por la línea de comandos, guárdalo en un archivo .bat o .js temporal y ejecuta ese archivo.
+```delphi
+// En lugar de: cmd.exe /C node -e "codigo_gigante..."
+// Haces: 
+// 1. Guardar codigo en 'temp.js'
+// 2. ExecuteCmdRealTime('node temp.js', MyMemo, True);
+```
+2. **Cambiar el tipo de dato** <br/>
+En Delphi 7, el tipo string ya es un AnsiString, lo que significa que puede almacenar hasta `2 GB` de texto. No necesitas cambiar el tipo de la variable `Command`; el cuello de botella es la `Windows API` y `cmd.exe`.
+3. **Evitar `cmd.exe /C` si es posible**<br*>
+Si vas a ejecutar un ejecutable directo (como `node.exe` o `git.exe`), puedes llamarlo sin pasar por cmd.exe. Esto te permite usar el límite completo de `32,767` caracteres de la API:
+```delphi
+// En CreateProcess, cambia esto:
+// PChar('cmd.exe /C ' + Command) 
+// Por esto (si Command empieza con el ejecutable directamente):
+PChar(Command) 
+```
+
+### Resumen de límites
+
+* **Variable string en Delphi 7**: `~2 Gigabytes` (Suficiente).
+* **Comando vía cmd.exe**: `8,191` caracteres (Riesgoso para procesos largos).
+* **Comando vía CreateProcess (directo)**: 32,767 caracteres.
+
