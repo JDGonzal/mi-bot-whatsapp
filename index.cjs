@@ -8,22 +8,51 @@ const ADODB = require('node-adodb');
 ADODB.debug = true;
 const fs = require('fs');
 const path = require('path');
+const { execFile } = require('child_process');
 
+// === Owner Phone Number: 3173450213 ===
+const country = (19 * 3).toString();
+const ownerPhone =
+  (35 * 9 + 2).toString() + (23 * 150).toString() + (71 * 3).toString();
 // ==== Definición del servicio API con express =====
 const app = express();
-const port = process.env.PORT || 3000;
 app.use(express.json());
 
+// ==== Variables globales y estructuras de datos =====
+const PORT = process.env.PORT || 3000;
+const ADODB_DATA_SOURCE =
+  process.env.ADODB_DATA_SOURCE || 'C:\\temp\\DINASTIA.accdb';
+const CHROME_PATH = process.env.CHROME_PATH;
+const READY_TIMEOUT_MS = Number(process.env.READY_TIMEOUT_MS) || 45_000; // tiempo máximo para esperar 'ready'
+const RESTART_BASE_MS = Number(process.env.RESTART_BASE_MS) || 5_000; // backoff base
+const RESTART_MAX_MS = Number(process.env.RESTART_MAX_MS) || 60_000;
+const REGISTRY_VALUE = process.env.REGISTRY_VALUE;
+const REGISTRY_ALL = process.env.REGISTRY_ALL;
 // ===== Estado por usuario =====
-const estados = new Map();
+/**
+ * @typedef {Object} UserState
+ * @property {string} cellphone
+ * @property {string} username
+ * @property {Array<string|number>} numeros
+ * @property {number} unixTimestamp
+ * @property {boolean} [esperandoCelular]
+ * @property {boolean} [esperandoConfirmacion]
+ * @property {* } [buffer]
+ * @property {string} [texto]
+ */
+
+/** @type {Map<string, UserState>} */
+const statesMemory = new Map();
 
 let isQRRecharged = false;
 let client = null; // el cliente será creado por startClient(), no al cargar el módulo
 
 // Crear archivo de log al iniciar: YYYYMMddHHmmss.log en la carpeta del script
-function nowFilenameTs(d = new Date()) {
-  const unixTimestamp = Math.floor(d);
-  return `z${unixTimestamp}`;
+function nowFilenameTs(now = new Date()) {
+  const unixTimestamp = Math.floor(now);
+  const pad = (n) => String(n).padStart(2, '0');
+  const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `z${timestamp}`;
 }
 const logFileName = `${nowFilenameTs()}.log`;
 const logFilePath = path.join(__dirname, logFileName);
@@ -41,26 +70,27 @@ function consoleLog(type, ...args) {
   const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
   const prefix =
     {
-      info: 'ℹ️ ',
-      warn: '⚠️ ',
-      error: '❌',
-      check: '✅',
-      save: '💾',
-      send: '➡️',
-      recive: '⬅️ ',
-      idea: '💡',
-      find: '🔍',
-      retry: '🔂',
-      stopwatch: '⏱️ ',
-      hourglass: '⏳',
-      phone: '☎️ ',
-      eyes: '👀',
-      photo: '📷',
-      end: '🔚',
-      chart: '📊',
-      qr: '🔳',
-      access: '🅰️ ',
-      number: '#️⃣ ',
+      i_: 'ℹ️',
+      w_: '⚠️',
+      e_: '❌',
+      k_: '✅',
+      s_: '💾',
+      u_: '🔼',
+      d_: '🔽',
+      b_: '💡',
+      f_: '🔍',
+      r_: '🔂',
+      w_: '⏱️',
+      g_: '⏳',
+      p_: '☎️',
+      y_: '👀',
+      t_: '📷',
+      n_: '🔚',
+      c_: '📊',
+      q_: '🔳',
+      a_: '🅰️',
+      m_: '#️⃣',
+      h_: '❤️',
     }[type] || type;
   console.log(`${prefix} [${timestamp}]`, ...args);
   // También guardar una línea en el archivo de log creado al iniciar
@@ -87,8 +117,79 @@ function consoleLog(type, ...args) {
   }
 }
 
+// == Leer Registros del regedit
+async function readRegistry(value = REGISTRY_VALUE, rootkey = REGISTRY_ALL) {
+  // Si no viene rootkey o value, no hay nada que leer
+  if (!rootkey || !value) {
+    consoleLog('w_', 'Faltan parámetros de ruta o valor del registro');
+    return null;
+  }
+
+  // Descomponer la ruta en segmentos
+  const allPath = rootkey.match(/[^\\/]+/g) || [];
+  const regPath = allPath.join('\\');
+
+  return new Promise((resolve) => {
+    const args = ['query', regPath, '/v', value];
+    execFile('reg', args, (err, stdout, stderr) => {
+      if (err) {
+        consoleLog('e_', 'Error leyendo el registro:', {
+          message: err.message,
+          code: err && err.code,
+          stderr,
+        });
+        return resolve(null);
+      }
+
+      const parsedNumbers = stdout.match(/0x[0-9A-Fa-f]+|\d+/g) || [];
+      const stdoutArray = String(stdout).trim().split(/\s+/);
+      const result = { stdout: stdoutArray, parsed: parsedNumbers };
+      resolve(result);
+    });
+  });
+}
+
+async function writeRegistry(
+  data,
+  value = REGISTRY_VALUE,
+  rootkey = REGISTRY_ALL,
+) {
+  if (!rootkey || !value) {
+    consoleLog('w_', 'Faltan parámetros de ruta o valor del registro');
+    return null;
+  }
+  const allPath = rootkey.match(/[^\\/]+/g) || [];
+  const regPath = allPath.join('\\');
+
+  return new Promise((resolve) => {
+    const args = [
+      'add',
+      regPath,
+      '/v',
+      value,
+      '/t',
+      'REG_SZ',
+      '/d',
+      data,
+      '/f',
+    ];
+    execFile('reg', args, (err, stdout, stderr) => {
+      if (err) {
+        consoleLog('e_', 'Error escribiendo el registro:', {
+          message: err.message,
+          code: err && err.code,
+          stderr,
+        });
+        return resolve(false);
+      }
+
+      resolve(true);
+    });
+  });
+}
+
 // ====== Enviar Mensajes directos =====
-async function enviarMensajeDirecto(numero, texto) {
+async function sendDirectMsg(numero, texto) {
   try {
     // Limpiamos el número por si acaso (quitar espacios o signos +)
     const numeroLimpio = numero.replace(/\D/g, '');
@@ -99,68 +200,72 @@ async function enviarMensajeDirecto(numero, texto) {
 
     if (esValido) {
       await client.sendMessage(chatId, texto);
-      if (!numeroLimpio.includes('3173450213')) {
-        consoleLog('send', `Mensaje enviado a ${numeroLimpio}`);
+      if (!numeroLimpio.includes(ownerPhone)) {
+        consoleLog('u_', `Mensaje enviado a ${numeroLimpio}`);
+      }
+      if (
+        texto.toLowerCase().includes('heart') ||
+        texto.toLowerCase().includes('beat')
+      ) {
+        consoleLog('h_', `${texto} a ${numeroLimpio}`);
       }
     } else {
-      consoleLog('idea', `Registra este número en WhatsApp: ${numeroLimpio}`);
+      consoleLog('b_', `Registra este número en WhatsApp: ${numeroLimpio}`);
     }
   } catch (err) {
-    consoleLog('error', 'Error al enviar mensaje:', err);
+    consoleLog('e_', 'Error al enviar mensaje:', err);
   }
 }
 
 // ===== Configuración ADODB =====
-const ADODB_DATA_SOURCE =
-  process.env.ADODB_DATA_SOURCE || 'C:\\temp\\DINASTIA.accdb';
 let connection = ADODB.open(
   `Provider=Microsoft.ACE.OLEDB.16.0;Data Source=${ADODB_DATA_SOURCE};Persist Security Info=False;`,
 );
 
 // ===== Función para crear la tabla "celulares" =====
-async function crearTablaCelulares() {
+async function createCelTable() {
   const createTableQuery = process.env.CREATE_TABLE_CELULARES;
 
   await connection
     .query(createTableQuery)
-    .then(() => consoleLog('check', 'Tabla "CELULARES" creada.'))
+    .then(() => consoleLog('k_', 'Tabla "CELULARES" creada.'))
     .catch((err) => {
       msg = err?.process?.message ?? String(err);
       if (msg.toLowerCase().includes('already exists'))
-        consoleLog('check', 'Tabla "CELULARES" Lista.');
+        consoleLog('k_', 'Tabla "CELULARES" Lista.');
       else if (msg.toLowerCase().includes('object is closed'))
-        consoleLog('check', 'Tabla "CELULARES" creada.');
-      else consoleLog('error', msg);
+        consoleLog('k_', 'Tabla "CELULARES" creada.');
+      else consoleLog('e_', msg);
     });
   // Syntax error in CREATE TABLE statement.
   // Table 'CELULARES' already exists.
 }
 
 // ===== Función para crear la tabla "celulares" =====
-async function crearTablaRegistros() {
+async function createRegTable() {
   const createTableQuery = process.env.CREATE_TABLE_REGISTROS;
 
   await connection
     .query(createTableQuery)
-    .then(() => consoleLog('check', 'Tabla "REGISTROS" creada.'))
+    .then(() => consoleLog('k_', 'Tabla "REGISTROS" creada.'))
     .catch((err) => {
       msg = err?.process?.message ?? String(err);
       if (msg.toLowerCase().includes('already exists'))
-        consoleLog('check', 'Tabla "REGISTROS" Lista.');
+        consoleLog('k_', 'Tabla "REGISTROS" Lista.');
       else if (msg.toLowerCase().includes('object is closed'))
-        consoleLog('check', 'Tabla "REGISTROS" creada.');
-      else consoleLog('error', msg);
+        consoleLog('k_', 'Tabla "REGISTROS" creada.');
+      else consoleLog('e_', msg);
     });
   // Syntax error in CREATE TABLE statement.
   // Table 'CELULARES' already exists.
 }
 
 // ===== Prueba de conexión a la base de datos =====
-async function probarConexionMSAccess() {
+async function testDBConnection() {
   const testQuery = 'SELECT 1 AS ok';
   try {
     const test = await connection.query(testQuery);
-    consoleLog('check', 'Conexión exitosa a MSAccess:', test);
+    consoleLog('k_', 'Conexión exitosa a MSAccess:', test);
     const timestamp = new Date().toLocaleTimeString();
     let msg = `${timestamp}`;
     if (isQRRecharged) {
@@ -169,32 +274,32 @@ async function probarConexionMSAccess() {
     }
     //! VARIABLES DE AMBIENTE
     //* consoleLog(process.env.SystemRoot) // =C:\WINDOWS
-    await crearTablaCelulares();
-    await crearTablaRegistros();
-    await enviarMensajeDirecto('573173450213', msg);
+    await createCelTable();
+    await createRegTable();
+    await sendDirectMsg(country + ownerPhone, msg);
     return true;
   } catch (err) {
     msg = err?.process?.message ?? String(err);
-    consoleLog('access', 'Verificando conexión MSAccess, porque:\n', msg);
+    consoleLog('a_', 'Verificando conexión MSAccess, porque:\n', msg);
     await connection
       .query(testQuery)
-      .then((data) => consoleLog('check', 'Conexión exitosa a MSAccess:', data))
-      .catch((err) => consoleLog('error', err));
+      .then((data) => consoleLog('k_', 'Conexión exitosa a MSAccess:', data))
+      .catch((err) => consoleLog('e_', err));
     process.exit(0);
   }
 }
 
 // Funciones en MSAccess
-async function VerificarCelularEnBaseDeDatos(from) {
+async function checkCelInDB(from) {
   const query1 = `SELECT COUNT(*) AS [Found] 
     FROM [CELULARES] 
     WHERE [MESSAGE_FROM] = '${from}';`;
   const query2 = `SELECT TOP 1 * 
     FROM [CELULARES] 
     WHERE [MESSAGE_FROM] = '${from}';`;
-  const estado = estados.get(from);
+  const userStatus = statesMemory.get(from);
   if ((await from) === 'status@broadcast') {
-    estados.delete(from);
+    statesMemory.delete(from);
     return [{ CELLPHONE: 0, USER_NAME: 'Broadcast' }];
   }
   try {
@@ -203,87 +308,87 @@ async function VerificarCelularEnBaseDeDatos(from) {
       const data = await connection.query(query2);
       return data;
     } else {
-      if (await estado?.esperandoCelular) return;
+      if (await userStatus?.esperandoCelular) return;
       consoleLog(
-        'find',
+        'f_',
         'Número celular no hallado en la base de datos:',
         result,
       );
       return null;
     }
   } catch (err) {
-    if (await estado?.esperandoCelular) return;
-    consoleLog('error', 'Error verificando número en la base de datos:', err);
+    if (await userStatus?.esperandoCelular) return;
+    consoleLog('e_', 'Error verificando número en la base de datos:', err);
     return null;
   }
 }
 
-async function VerificarRegistrosEnBaseDeDatos(from) {
-  const { cellphone, numeros, unixTimestamp } = estados.get(from);
+async function checkRegInDB(from) {
+  const { cellphone, numeros, unixTimestamp } = statesMemory.get(from);
   const query = `SELECT * 
     FROM [REGISTROS] 
     WHERE [CELLPHONE] = ${cellphone}
     AND ([BONO] IN (${numeros.join(',')})
     OR [IDUNIX] >= '${unixTimestamp}');`;
 
-  const estado = estados.get(from);
+  const userStatus = statesMemory.get(from);
   try {
     const data = await connection.query(query);
 
     if (!data[0]) {
-      if (await estado?.esperandoConfirmacion) return;
-      consoleLog('error', 'Números no encontrados en la base de datos:', data);
+      if (await userStatus?.esperandoConfirmacion) return;
+      consoleLog('e_', 'Números no encontrados en la base de datos:', data);
       return null;
     }
     return data;
   } catch (err) {
-    if (await estado?.esperandoConfirmacion) return;
-    consoleLog('error', 'Error verificando números en la base de datos:', err);
+    if (await userStatus?.esperandoConfirmacion) return;
+    consoleLog('e_', 'Error verificando números en la base de datos:', err);
     return null;
   }
 }
 
-async function guardarCelularEnBaseDeDatos(from, nombreUsuario, celular) {
+async function saveCelInDB(from, nombreUsuario, celular) {
   const insertQuery = `
 INSERT INTO [CELULARES] ([MESSAGE_FROM], [USER_NAME], [CELLPHONE])
     VALUES ('${from}', '${nombreUsuario}', ${celular});`;
 
   try {
     await connection.query(insertQuery);
-    consoleLog('check', `Celular ${celular} guardado en la base de datos.`);
+    consoleLog('k_', `Celular ${celular} guardado en la base de datos.`);
     return true;
   } catch (err) {
-    if (await VerificarCelularEnBaseDeDatos(from)) {
+    if (await checkCelInDB(from)) {
       return true;
     } else {
-      consoleLog(
-        'error',
-        `Error guardando celular en la base de datos: ${err}`,
-      );
+      consoleLog('e_', `Error guardando celular en la base de datos: ${err}`);
       return false;
     }
   }
 }
 
-async function guardarRegistrosEnBaseDeDatos(from) {
-  let estado = estados.get(from);
-  if (!estado || !estado.numeros || !estado.cellphone) {
-    consoleLog('error', 'Estado incompleto para guardar registros:', {
+// Guardar REGISTROS en DB
+async function saveRegInDB(from) {
+  let userStatus = statesMemory.get(from);
+  if (!userStatus || !userStatus.numeros || !userStatus.cellphone) {
+    consoleLog('e_', 'Estado incompleto para guardar registros:', {
       from,
-      estado,
+      userStatus,
     });
     return false;
   }
 
-  consoleLog('1️⃣ ', 'Números (inicio):', estado.numeros.join(', '));
+  consoleLog('1️⃣ ', 'Números (inicio):', userStatus.numeros.join(', '));
 
   // Trabajamos sobre una copia para evitar problemas al modificar la lista mientras iteramos
-  const snapshot = Array.isArray(estado.numeros) ? [...estado.numeros] : [];
+  const snapshot = Array.isArray(userStatus.numeros)
+    ? [...userStatus.numeros]
+    : [];
 
   for (const num of snapshot) {
     const unixTimestamp = Math.floor(Date.now());
     const cleaned = (num || '').toString().trim();
-    const insertQuery = `INSERT INTO [REGISTROS] ([IDUNIX],[CELLPHONE],[BONO]) VALUES ('${unixTimestamp}', ${estado.cellphone}, ${cleaned});`;
+    const insertQuery = `INSERT INTO [REGISTROS] ([IDUNIX],[CELLPHONE],[BONO]) VALUES ('${unixTimestamp}', ${userStatus.cellphone}, ${cleaned});`;
 
     consoleLog('2️⃣ ', 'sql:', insertQuery);
 
@@ -292,24 +397,28 @@ async function guardarRegistrosEnBaseDeDatos(from) {
     } catch (err) {
       const msg = err?.process?.message ?? String(err);
 
-      // Si es un duplicado, actualizamos el estado eliminando ese número y continuamos
+      // Si es un duplicado, actualizamos el userStatus eliminando ese número y continuamos
       if (typeof msg === 'string' && msg.toLowerCase().includes('duplicate')) {
-        // Re-lee el estado actual del Map por si cambió mientras iterábamos
-        const current = estados.get(from) || estado;
+        // Re-lee el userStatus actual del Map por si cambió mientras iterábamos
+        const current = statesMemory.get(from) || userStatus;
         const updatedNumeros = (current.numeros || []).filter((n) => n !== num);
-        estados.set(from, { ...current, numeros: updatedNumeros });
-        consoleLog('3️⃣ ', 'Duplicado detectado, eliminado del estado:', num);
+        statesMemory.set(from, { ...current, numeros: updatedNumeros });
+        consoleLog(
+          '3️⃣ ',
+          'Duplicado detectado, eliminado del userStatus:',
+          num,
+        );
         consoleLog(
           '4️⃣ ',
           'Números actuales (post-eliminación):',
           updatedNumeros.join(', '),
         );
         // Actualiza variable local para reflejar el cambio en esta iteración
-        estado = estados.get(from) || estado;
+        userStatus = statesMemory.get(from) || userStatus;
         continue;
       }
       if (!msg.toLowerCase().includes('object is closed')) {
-        consoleLog('error', msg);
+        consoleLog('e_', msg);
       }
     }
   }
@@ -317,10 +426,6 @@ async function guardarRegistrosEnBaseDeDatos(from) {
 }
 
 // ===== Eventos del cliente y lógica de reinicio resiliente =====
-// Constantes de control
-const READY_TIMEOUT_MS = Number(process.env.READY_TIMEOUT_MS) || 45_000; // tiempo máximo para esperar 'ready'
-const RESTART_BASE_MS = Number(process.env.RESTART_BASE_MS) || 5_000; // backoff base
-const RESTART_MAX_MS = Number(process.env.RESTART_MAX_MS) || 60_000;
 
 let readyTimer = null;
 let restartAttempts = 0;
@@ -337,20 +442,20 @@ function createClientInstance(idSuffix) {
       puppeteer: {
         headless: true,
         executablePath:
-          process.env.CHROME_PATH ||
+          CHROME_PATH ||
           'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
         args: ['--no-sandbox', '--disable-setuid-sandbox'],
       },
     });
   } catch (err) {
-    consoleLog('error', 'Error creando instancia de Client:', err);
+    consoleLog('e_', 'Error creando instancia de Client:', err);
     throw err;
   }
 }
 
 function clearReadyTimer() {
   if (readyTimer) {
-    consoleLog('info', 'Limpiando timer de ready');
+    consoleLog('i_', 'Limpiando timer de ready');
     clearTimeout(readyTimer);
     readyTimer = null;
   }
@@ -358,7 +463,7 @@ function clearReadyTimer() {
 
 function scheduleRestart(reason) {
   try {
-    consoleLog('retry', `scheduleRestart llamado por: "${reason}"`);
+    consoleLog('r_', `scheduleRestart llamado por: "${reason}"`);
     if (shuttingDownClient) return;
     restartAttempts++;
     const delay = Math.min(
@@ -366,12 +471,12 @@ function scheduleRestart(reason) {
       RESTART_BASE_MS * 2 ** (restartAttempts - 1),
     );
     consoleLog(
-      'retry',
+      'r_',
       `Reiniciando cliente por: "${reason}". Intento ${restartAttempts} en ${delay}ms`,
     );
     setTimeout(() => startClient(), delay);
   } catch (err) {
-    consoleLog('error', 'Error en scheduleRestart:', err);
+    consoleLog('e_', 'Error en scheduleRestart:', err);
   }
 }
 
@@ -382,7 +487,7 @@ async function safeDestroyClient() {
     client.removeAllListeners();
     await client.destroy();
   } catch (err) {
-    consoleLog('error', 'Error destroying client:', err);
+    consoleLog('e_', 'Error destroying client:', err);
   } finally {
     client = null;
     shuttingDownClient = false;
@@ -390,35 +495,35 @@ async function safeDestroyClient() {
 }
 
 // ===== Función OCR =====
-async function leerNumeros(buffer) {
+async function readOCRNumbers(buffer) {
   const result = await Tesseract.recognize(buffer, 'eng', {
     tessedit_char_whitelist: '0123456789',
   });
-  consoleLog('eyes', 'Leyendo imagen...');
+  consoleLog('y_', 'Leyendo imagen...');
   const texto = result.data.text;
   return texto.match(/\d+/g);
 }
 
 function attachClientHandlers(c) {
   // QR
-  c.on('qr', (qr) => {
+  c.on('q_', (qr) => {
     console.clear();
     isQRRecharged = true;
-    consoleLog('qr', 'Escanea este QR con tu WhatsApp:');
+    consoleLog('q_', 'Escanea este QR con tu WhatsApp:');
     qrcode.generate(qr, { small: true });
     const timestamp = new Date().toLocaleTimeString();
-    consoleLog('hourglass', `[${timestamp}] QR generado, esperando escaneo...`);
+    consoleLog('g_', `[${timestamp}] QR generado, esperando escaneo...`);
   });
 
   // Ready
   c.on('ready', async () => {
     clearReadyTimer();
     restartAttempts = 0;
-    consoleLog('check', 'Bot listo y conectado a WhatsApp.');
+    consoleLog('k_', 'Bot listo y conectado a WhatsApp.');
     try {
-      await probarConexionMSAccess();
+      await testDBConnection();
     } catch (err) {
-      consoleLog('error', 'Error en probarConexionMSAccess:', err);
+      consoleLog('e_', 'Error en testDBConnection:', err);
     }
   });
 
@@ -429,7 +534,7 @@ function attachClientHandlers(c) {
       consoleLog('🔐', 'auth_failure:', msg);
       safeDestroyClient().then(() => scheduleRestart('auth_failure'));
     } catch (err) {
-      consoleLog('error', 'Error en auth_failure handler:', err);
+      consoleLog('e_', 'Error en auth_failure handler:', err);
     }
   });
 
@@ -440,41 +545,41 @@ function attachClientHandlers(c) {
       consoleLog('📴', 'disconnected:', reason);
       safeDestroyClient().then(() => scheduleRestart('disconnected'));
     } catch (err) {
-      consoleLog('error', 'Error en disconnected handler:', err);
+      consoleLog('e_', 'Error en disconnected handler:', err);
     }
   });
 
   // Optional state change log
   c.on('change_state', (state) => {
-    consoleLog('chart', 'Estado del cliente de WhatsApp:', state);
+    consoleLog('c_', 'Estado del cliente de WhatsApp:', state);
   });
 
   // Message handler (se mantiene la lógica original)
   c.on('message', async (msg) => {
     consoleLog(
-      'recive',
+      'd_',
       `{"origen":"${msg?.author || msg.from}", "contenido":"${msg.body || msg.caption || '[media]'}", "hasMedia":${msg.hasMedia} ${msg.type ? `, "tipo":"${msg.type}"` : ''}}`,
     );
 
     if (msg.from === 'status@broadcast') return;
     const texto = msg.body;
     const numeros = texto.match(/\d+/g);
-    const estado = estados.get(msg.from);
-    const data = await VerificarCelularEnBaseDeDatos(msg.from);
+    const userStatus = statesMemory.get(msg.from);
+    const data = await checkCelInDB(msg.from);
     const isValidMedia =
       msg.hasMedia && msg?.type === 'image' && msg.from !== 'status@broadcast';
 
     if (data) {
       if (
         (numeros || isValidMedia) &&
-        !(await estado?.esperandoCelular) &&
-        !(await estado?.esperandoConfirmacion)
+        !(await userStatus?.esperandoCelular) &&
+        !(await userStatus?.esperandoConfirmacion)
       ) {
         consoleLog(
-          'phone',
+          'p_',
           `Celular número: '${data[0]?.CELLPHONE}' de "${data[0]?.USER_NAME}"`,
         );
-        estados.set(msg.from, {
+        statesMemory.set(msg.from, {
           esperandoConfirmacion: true,
           numeros,
           texto,
@@ -483,7 +588,7 @@ function attachClientHandlers(c) {
           unixTimestamp: Math.floor(Date.now()),
         });
         if (numeros) {
-          consoleLog('number', `Números detectados: ${numeros.join(', ')}`);
+          consoleLog('m_', `Números detectados: ${numeros.join(', ')}`);
           return msg.reply(
             `#️⃣  Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
           );
@@ -492,12 +597,12 @@ function attachClientHandlers(c) {
     }
 
     if (
-      !(await estado?.esperandoCelular) &&
-      !(await estado?.esperandoConfirmacion)
+      !(await userStatus?.esperandoCelular) &&
+      !(await userStatus?.esperandoConfirmacion)
     ) {
       // Verificamos primer si existe el número celular
       if (!data || data[0]?.Found === 0) {
-        estados.set(msg.from, {
+        statesMemory.set(msg.from, {
           esperandoCelular: true,
           cellphone: null,
           username: msg._data.notifyName || 'Desconocido',
@@ -514,7 +619,7 @@ function attachClientHandlers(c) {
       );
     }
     // ===== Caso: esperando confirmación =====
-    if (await estado?.esperandoConfirmacion) {
+    if (await userStatus?.esperandoConfirmacion) {
       const respuesta = msg.body.trim().toLowerCase();
 
       if (
@@ -523,43 +628,43 @@ function attachClientHandlers(c) {
         respuesta === 'y' ||
         respuesta === 'yes'
       ) {
-        if (await guardarRegistrosEnBaseDeDatos(msg.from)) {
-          const data = await VerificarRegistrosEnBaseDeDatos(msg.from);
+        if (await saveRegInDB(msg.from)) {
+          const data = await checkRegInDB(msg.from);
           let numerosGuardados = [];
           if (data && data.length > 0) {
             numerosGuardados = data.map((item) => item?.BONO);
           }
           consoleLog(
-            'save',
-            `Confirmado. Guardado de '${estado.cellphone}' los números: ${numerosGuardados.join(', ')}`,
+            's_',
+            `Confirmado. Guardado de '${userStatus.cellphone}' los números: ${numerosGuardados.join(', ')}`,
           );
           await msg.reply(
-            `💾 Confirmado.\nGuardado de ${estado.cellphone} los números:\n* ${numerosGuardados.join('\n* ')}\nNúmero que no esté en esta lista es por ser duplicado o haberse guardado previamente.\n\n⚠️La validación final estará sujeta a revisiones manuales posteriores.`,
+            `💾 Confirmado.\nGuardado de ${userStatus.cellphone} los números:\n* ${numerosGuardados.join('\n* ')}\nNúmero que no esté en esta lista es por ser duplicado o haberse guardado previamente.\n\n⚠️La validación final estará sujeta a revisiones manuales posteriores.`,
           );
-          estados.delete(msg.from);
+          statesMemory.delete(msg.from);
           return true;
         } else {
           consoleLog(
-            'error',
+            'e_',
             'Error guardando números en la base de datos para:',
             {
               from: msg.from,
-              username: estado.username,
+              username: userStatus.username,
             },
           );
           await msg.reply(
             '❌ Error guardando los números en la base de datos. Intenta de nuevo más tarde.',
           );
-          estados.delete(msg.from);
+          statesMemory.delete(msg.from);
           return false;
         }
       }
       if (respuesta === 'n' || respuesta === 'no') {
         consoleLog(
-          'warn',
-          `Usuario '${estado.username}' indicó que los números no son correctos, estado reiniciado.`,
+          'w_',
+          `Usuario '${userStatus.username}' indicó que los números no son correctos, userStatus reiniciado.`,
         );
-        estados.delete(msg.from);
+        statesMemory.delete(msg.from);
         return msg.reply(
           '💡 *Sugerencia*:\n1️⃣ Mejora la imagen y envía de nuevo.\n2️⃣ O digita la lista de números separados por comas.',
         );
@@ -569,7 +674,7 @@ function attachClientHandlers(c) {
     }
 
     // ===== Caso: esperando celular =====
-    if (await estado?.esperandoCelular) {
+    if (await userStatus?.esperandoCelular) {
       const regexCelular = /^\d{10}$/; // Ajusta el rango según tus necesidades
       const celular = msg.body.trim().toLowerCase();
 
@@ -579,18 +684,18 @@ function attachClientHandlers(c) {
         celular.length === 10 &&
         celular[0] === '3'
       ) {
-        estados.set(msg.from, {
+        statesMemory.set(msg.from, {
           esperandoCelular: true,
           cellphone: celular,
           username: msg._data.notifyName || 'Desconocido',
         });
-        const { cellphone, username } = estados.get(msg.from);
-        if (await guardarCelularEnBaseDeDatos(msg.from, username, cellphone)) {
+        const { cellphone, username } = statesMemory.get(msg.from);
+        if (await saveCelInDB(msg.from, username, cellphone)) {
           consoleLog(
-            'save',
+            's_',
             `Confirmado. Guardado de "${username}" con celular '${cellphone}'`,
           );
-          estados.delete(msg.from);
+          statesMemory.delete(msg.from);
         } else {
           return msg.reply(
             '❌ Error guardando el número en la base de datos. Intenta de nuevo más tarde.',
@@ -610,33 +715,30 @@ function attachClientHandlers(c) {
     // ===== Caso: mensaje con imagen =====
     if (isValidMedia) {
       try {
-        consoleLog(
-          'photo',
-          'Mensaje con imagen detectado, descargando media...',
-        );
+        consoleLog('t_', 'Mensaje con imagen detectado, descargando media...');
         const media = await msg.downloadMedia();
         const buffer = Buffer.from(media.data, 'base64');
 
-        const numeros = await leerNumeros(buffer);
+        const numeros = await readOCRNumbers(buffer);
 
         if (!numeros) {
-          consoleLog('warn', 'No detecté números en la imagen');
+          consoleLog('w_', 'No detecté números en la imagen');
           return msg.reply('🚨 No detecté números en la imagen');
         }
-        const current = estados.get(msg.from) || estado;
-        estados.set(msg.from, {
+        const current = statesMemory.get(msg.from) || userStatus;
+        statesMemory.set(msg.from, {
           ...current,
           esperandoConfirmacion: true,
           numeros,
           buffer,
         });
-        consoleLog('number', `Números detectados: ${numeros.join(', ')}`);
+        consoleLog('m_', `Números detectados: ${numeros.join(', ')}`);
         return msg.reply(
           `#️⃣  Números detectados: ${numeros.join(', ')}\n\n¿Están correctos? S/N`,
         );
       } catch (err) {
-        consoleLog('error', 'Error leyendo la imagen');
-        consoleLog('error', err);
+        consoleLog('e_', 'Error leyendo la imagen');
+        consoleLog('e_', err);
         msg.reply('❌ Error leyendo la imagen');
       }
     }
@@ -646,21 +748,21 @@ function attachClientHandlers(c) {
 function startClient() {
   try {
     if (client) {
-      consoleLog('error', 'Cliente ya existe, ignorando start');
+      consoleLog('e_', 'Cliente ya existe, ignorando start');
       return;
     }
 
     client = createClientInstance();
     attachClientHandlers(client);
   } catch (err) {
-    consoleLog('error', 'Error en startClient:', err);
+    consoleLog('e_', 'Error en startClient:', err);
     return;
   }
   // Inicializa el cliente y establece un timer que reiniciará si no llega 'ready'
   try {
     client.initialize();
   } catch (err) {
-    consoleLog('error', 'Error al inicializar client:', err);
+    consoleLog('e_', 'Error al inicializar client:', err);
     safeDestroyClient().then(() => scheduleRestart('initialize_error'));
     return;
   }
@@ -669,13 +771,13 @@ function startClient() {
     readyTimer = setTimeout(() => {
       if (!client) return;
       consoleLog(
-        'stopwatch',
+        'w_',
         `No llegó 'ready' en ${READY_TIMEOUT_MS}ms — reiniciando cliente.`,
       );
       safeDestroyClient().then(() => scheduleRestart('ready_timeout'));
     }, READY_TIMEOUT_MS);
   } catch (err) {
-    consoleLog('error', 'Error en ready timeout setup:', err);
+    consoleLog('e_', 'Error en ready timeout setup:', err);
   }
 }
 
@@ -686,7 +788,7 @@ startClient();
 
 // Manejo de cierre del proceso
 process.on('SIGINT', async () => {
-  consoleLog('end', 'Deteniendo servidor...');
+  consoleLog('n_', 'Deteniendo servidor...');
   connection = null; // Liberamos la conexión a la base de datos por seguridad
   await safeDestroyClient();
   process.exit(0);
@@ -712,11 +814,43 @@ app.get('/', (req, res) => {
  */
 app.post('/enviar-alerta', async (req, res) => {
   const { numero, mensaje } = req.body;
-  await enviarMensajeDirecto(numero, mensaje);
+  await sendDirectMsg(numero, mensaje);
   res.json({ status: 'Procesado' });
 });
 
+/**
+ * *GET '/leer-registro'
+ *
+ * @param {string} numero - telephone number
+ * @param {string} mensaje - Text to send
+ * @returns {string} status - answer
+ */
+app.get('/leer-registro', async (req, res) => {
+  // const { numero, mensaje } = req.body;
+  const registryValue = await readRegistry('PID');
+  consoleLog('i_', 'Valor del registro leído:', registryValue?.parsed);
+  res.json({ status: 'Leído' });
+});
+
+/**
+ * *POST '/escribir-registro'
+ *
+ * @param {string} data - Data to write
+ * @param {string} value - Value to write
+ * @param {string} rootkey - Root key for the registry
+ * @returns {string} status - answer
+ */
+app.post('/escribir-registro', async (req, res) => {
+  const { data, value, rootkey } = req.body;
+  const isOk = await writeRegistry(data, value, rootkey);
+  if (isOk) {
+    res.json({ status: 'Escrito' });
+  } else {
+    res.json({ status: 'Error al escribir' });
+  }
+});
+
 // ==== Escucha de Server API de express ===
-app.listen(port, () => {
-  consoleLog('check', `Servidor Express corriendo en http://localhost:${port}`);
+app.listen(PORT, () => {
+  consoleLog('k_', `Servidor Express corriendo en http://localhost:${PORT}`);
 });
