@@ -2572,3 +2572,257 @@ PChar(Command)
 * **Comando vía cmd.exe**: `8,191` caracteres (Riesgoso para procesos largos).
 * **Comando vía CreateProcess (directo)**: 32,767 caracteres.
 
+
+## Guardar información en el Registro de Windows
+
+Sí ✅, JavaScript puede leer y escribir en el Registro de Windows, **pero solo cuando se ejecuta en `Node.js`**.
+En JavaScript del navegador no es posible por seguridad.
+
+Hay varias formas de hacerlo en `Node.js`.
+
+### ✅ Opción 1 — Usar librería winreg (recomendado)
+
+Instalar:
+```bash
+npm install winreg
+```
+
+1. **Leer del registro**
+  
+```js
+const WinReg = require('winreg')
+
+const regKey = new WinReg({
+  hive: WinReg.HKCU,
+  key: '\\Software\\MiApp'
+})
+
+regKey.get('MiValor', (err, item) => {
+  if (err) {
+    console.log('Error:', err)
+    return
+  }
+
+  console.log('Valor:', item.value)
+})
+```
+2. **Escribir en el registro**
+```js
+regKey.set('MiValor', WinReg.REG_SZ, 'Hola Mundo', function (err) {
+  if (err) {
+    console.log(err)
+  } else {
+    console.log('Valor guardado')
+  }
+})
+```
+
+### ✅ Opción 2 — Usar comandos reg de Windows
+
+Node puede ejecutar comandos del sistema.
+
+1. **Leer**
+```js
+const { exec } = require('child_process')
+
+exec('reg query HKCU\\Software\\MiApp', (err, stdout) => {
+  console.log(stdout)
+})
+```
+2. **Escribir**
+```js
+exec('reg add HKCU\\Software\\MiApp /v MiValor /t REG_SZ /d Hola /f')
+```
+
+### ✅ Opción 3 — Librería registry-js
+
+Más moderna:
+```bash
+npm install registry-js
+```
+Ejemplo:
+```js
+const Registry = require('registry-js')
+
+const values = Registry.enumerateValues(
+  Registry.HKEY.HKEY_CURRENT_USER,
+  'Software\\MiApp'
+)
+
+console.log(values)
+```
+
+>[!WARNING]
+>
+>**⚠ Permisos importantes**<br/>
+>Para algunas rutas necesitas ejecutar Node como Administrador:
+>
+>|Ruta|Permiso|
+>|--|--|
+>|HKCU|Usuario|
+>|HKLM|Administrador|
+>
+
+### 🧠 Recomendación
+
+Para aplicaciones Node:
+
+👉 winreg → más simple<br/>
+👉 registry-js → más rápido<br/>
+👉 reg command → sin dependencias<br/>
+
+### 🚀 Ejemplo real (configuración de app)
+
+Guardar configuración:
+
+`HKCU\Software\Empresa\MiBot`
+
+Valores:
+
+* Token
+* RutaDB
+* UltimaSesion
+
+Así tu bot recuerda configuración.
+
+### ✅ Ampliando la Opción 2
+
+### 1. Cargando valores en **`.env`**
+
+1. `REGISTRY_ALL` es igaula a una ruta como la del ejemplo `HKCU/Software/MiApp`, pero usando el _slash_.
+2. `REGISTRY_VALUE`, el valor que voy a acceder dentro de esa ruta.
+
+### 2. Función readRegistry
+
+1. En el ejemplo se usa `exec` de `child-process`, acá se debe usar `execFile`.
+2. La función empieza importando los valores de las variables de ambiente o del archivo **`.env`**:
+```js
+async function readRegistry(value = REGISTRY_VALUE, rootkey = REGISTRY_ALL) {
+  // Si no viene rootkey o value, no hay nada que leer
+  if (!rootkey || !value) {
+    consoleLog('w_', 'Faltan parámetros de ruta o valor del registro');
+    return null;
+  }
+
+  // Descomponer la ruta en segmentos
+  const allPath = rootkey.match(/[^\\/]+/g) || [];
+  const regPath = allPath.join('\\');
+}
+```
+3. Completamos la función retornando una `promise`:
+```js
+async function readRegistry(value = REGISTRY_VALUE, rootkey = REGISTRY_ALL) {
+  ...
+
+  return new Promise((resolve) => {
+    const args = ['query', regPath, '/v', value];
+    execFile('reg', args, (err, stdout, stderr) => {
+      if (err) {
+        consoleLog('e_', 'Error leyendo el registro:', {
+          message: err.message,
+          code: err && err.code,
+          stderr,
+        });
+        return resolve(null);
+      }
+
+      const parsedNumbers = stdout.match(/0x[0-9A-Fa-f]+|\d+/g) || [];
+      const stdoutArray = String(stdout).trim().split(/\s+/);
+      const result = { stdout: stdoutArray, parsed: parsedNumbers };
+      resolve(result);
+    });
+  });
+}
+```
+4. Por último una `get`, para devolver simlemente ese valor:
+```js
+/**
+ * *GET '/leer-registro'
+ *
+ * @param {string} numero - telephone number
+ * @param {string} mensaje - Text to send
+ * @returns {string} status - answer
+ */
+app.get('/leer-registro', async (req, res) => {
+  // const { numero, mensaje } = req.body;
+  const registryValue = await readRegistry('PID');
+  consoleLog('i_', 'Valor del registro leído:', registryValue?.parsed);
+  res.json({ status: 'Leído' });
+});
+```
+
+### 3. Función writeRegistry
+
+1. En el ejemplo se usa `exec` de `child-process`, acá se debe usar `execFile`.
+2. La función empieza importando los valores de las variables de ambiente o del archivo **`.env`**:
+```js
+async function writeRegistry(
+  data,
+  value = REGISTRY_VALUE,
+  rootkey = REGISTRY_ALL,
+) {
+  if (!rootkey || !value) {
+    consoleLog('w_', 'Faltan parámetros de ruta o valor del registro');
+    return null;
+  }
+  const allPath = rootkey.match(/[^\\/]+/g) || [];
+  const regPath = allPath.join('\\');
+
+}
+```
+3. Completamos la función retornando una `promise`:
+```js
+async function writeRegistry(
+  data,
+  value = REGISTRY_VALUE,
+  rootkey = REGISTRY_ALL,
+) {
+  ...
+
+  return new Promise((resolve) => {
+    const args = [
+      'add',
+      regPath,
+      '/v',
+      value,
+      '/t',
+      'REG_SZ',
+      '/d',
+      data,
+      '/f',
+    ];
+    execFile('reg', args, (err, stdout, stderr) => {
+      if (err) {
+        consoleLog('e_', 'Error escribiendo el registro:', {
+          message: err.message,
+          code: err && err.code,
+          stderr,
+        });
+        return resolve(false);
+      }
+
+      resolve(true);
+    });
+  });
+}
+```
+4. Por último una `post`, para devolver simlemente ese valor:
+```js
+/**
+ * *POST '/escribir-registro'
+ *
+ * @param {string} data - Data to write
+ * @param {string} value - Value to write
+ * @param {string} rootkey - Root key for the registry
+ * @returns {string} status - answer
+ */
+app.post('/escribir-registro', async (req, res) => {
+  const { data, value, rootkey } = req.body;
+  const isOk = await writeRegistry(data, value, rootkey);
+  if (isOk) {
+    res.json({ status: 'Escrito' });
+  } else {
+    res.json({ status: 'Error al escribir' });
+  }
+});
+```
